@@ -1,3 +1,153 @@
+## 2025-05-18 CORE 9.2.1
+
+* Installation
+    * \#914 - improvements to provided Dockerfiles
+    * \#915 - fix for package uninstall errors during post uninstall script
+* core-daemon
+    * \#895 - update to properly allow environment variables with an "=" in the value section
+    * \#909 - fix to revert loss of concurrency during service startup
+* core-gui
+    * \#916 - fix to allow negative values for emane configurations
+
+## 2025-02-11 CORE 9.2.0
+
+* Installation
+    * python3.10+ now required
+    * updated various dependencies to help avoid the need to build them from source
+* Documentation
+    * docker run examples updated
+    * gRPC edit link examples corrected
+    * updated install examples
+    * updated tutorials to use absolute paths
+    * updated custom service example
+* core-daemon
+    * removed use of killall in provided services
+    * \#860 - fixed core-cli xml --start to run control network
+    * \#881 - EMANE TDMA fails to start
+    * \#888 - fixed service start validation
+    * \#902 - link deletion removing incorrect nodes
+* core-gui
+    * fixed bug when changing icons on a loaded scenario
+    * \#897 - fixed to properly exit when closing on a running session
+
+## 2024-07-04 CORE 9.1.0
+
+* Installation
+    * most install files are now consolidated under /opt/core
+    * \#830 / \#831 - fixed issues with systemd service support
+* Documentation
+    * added notes about MaxSession configuration for SSH when running distributed
+    * \#826 - updated tutorial 3 documentation
+* core-daemon
+    * updated Docker nodes to use docker exec by default for commands
+    * added Podman nodes
+    * Docker/Podman compose support for nodes to allow greater configuration
+    * Docker/Podman node images no longer require network tools for orchestration
+    * EMANE configuration parsing updated to treat regexes as provided
+    * executables are now symlinks under $prefix/bin to avoid PATH issues
+    * new flag added to quickly enable debug logging
+    * code refactoring for handling internal nodes like control nets and ptp
+    * \#789 - wlan nodes can now configure the subnet for connected nodes
+    * \#801 - fixed issue running EMANE within Docker/Podman
+    * \#816 - fixed split link configuration saving to XML
+    * \#823 - config services are now the default and only services available
+    * \#842 - gRPC WLAN add node during runtime fixed
+    * \#875 - fix dataclass creation for python 3.11+
+* core-gui
+    * fixed copy/paste nodes to include image name
+    * adds root to xhost by default when running
+    * \#811 - added convenience shortcut to run arbitrary commands from nodes, like wireshark
+
+## 2023-08-01 CORE 9.0.3
+
+* Installation
+    * updated various dependencies
+* Documentation
+    * improved GUI docs to include node interaction and note xhost usage
+    * \#780  - fixed gRPC examples
+    * \#787 - complete documentation revamp to leverage mkdocs material
+    * \#790 - fixed custom emane model example
+* core-daemon
+    * update type hinting to avoid deprecated imports
+    * updated commands ran within docker based nodes to have proper environment variables
+    * fixed issue improperly setting session options over gRPC
+    * \#668 - add fedora sbin path to frr service
+    * \#774 - fixed pcap configservice
+    * \#805 - fixed radvd configservice template error
+* core-gui
+    * update type hinting to avoid deprecated imports
+    * fixed issue allowing duplicate named hook scripts
+    * fixed issue joining sessions with RJ45 nodes
+* utility scripts
+    * fixed issue in core-cleanup for removing devices
+
+## 2023-03-02 CORE 9.0.2
+
+* Installation
+    * updated python dependencies, including invoke to resolve python 3.10+ issues
+    * improved example dockerfiles to use less space for built images
+* Documentation
+    * updated emane install instructions
+    * added Docker related issues to install instructions
+* core-daemon
+    * fixed issue using invalid device name in sysctl commands
+    * updated PTP nodes to properly disable mac learning for their linux bridge
+    * fixed issue for LXC nodes to properly use a configured image name and write it to XML
+    * \#742 - fixed issue with bad wlan node id being used
+    * \#744 - fixed issue not properly setting broadcast address
+* core-gui
+    * fixed sample1.xml to remove SSH service
+    * fixed emane demo examples
+    * fixed issue displaying emane configs generally configured for a node
+
+## 2022-11-28 CORE 9.0.1
+
+* Installation
+    * updated protobuf and grpcio-tools versions in pyproject.toml to account for bad version mix
+
+## 2022-11-18 CORE 9.0.0
+
+* Breaking Changes
+    * removed session nodes file
+    * removed session state file
+    * emane now runs in one process per nem with unique control ports
+    * grpc client has been refactored and updated
+    * removed tcl/legacy gui, imn file support and the tlv api
+    * link configuration is now different, but consistent, for wired links
+* Installation
+    * added packaging for single file distribution
+    * python3.9 is now the minimum required version
+    * updated Dockerfile examples
+    * updated various python dependencies
+    * virtual environment is now installed to /opt/core/venv
+* Documentation
+    * updated emane invoke task examples
+    * revamped install documentation
+    * added wireless node notes
+* core-gui
+    * updated config services to display rendered templated and allow editing
+    * fixed node icon issue when updating preferences
+    * \#89 - throughput widget now works for hubs/switches
+    * \#691 - fixed custom nodes to properly use config services
+* gRPC API
+    * add linked call to support linking and unlinking interfaces without destroying them
+    * fixed issue during start session clearing out session options
+    * added call to get rendered config service files
+    * removed get_node_links from links from client
+    * nem id and nem port have been added to GetNode and AddLink calls
+* core-daemon
+    * wired links always create two veth pairs joined by a bridge
+    * node interfaces are now configured within the container to apply to outgoing traffic
+    * session.add_node now uses NodeOptions, allowing for node specific options
+    * fixed issue with xml reading node canvas values
+    * removed Session.add_node_file
+    * fixed get requirements logic
+    * fixed docker/lxd node support terminal commands on remote servers
+    * improved docker node command execution time using nsenter
+    * new wireless node type added to support dynamic loss based on distance
+    * \#513 - add and deleting distributed links during runtime is now supported
+    * \#703 - fixed issue not starting emane event listening service
+
 ## 2022-03-21 CORE 8.2.0
 
 * core-gui

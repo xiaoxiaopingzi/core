@@ -4,7 +4,7 @@ import webbrowser
 from functools import partial
 from pathlib import Path
 from tkinter import filedialog, messagebox
-from typing import TYPE_CHECKING, Optional
+from typing import TYPE_CHECKING
 
 from core.gui import images
 from core.gui.coreclient import CoreClient
@@ -17,6 +17,7 @@ from core.gui.dialogs.find import FindDialog
 from core.gui.dialogs.hooks import HooksDialog
 from core.gui.dialogs.ipdialog import IpConfigDialog
 from core.gui.dialogs.macdialog import MacConfigDialog
+from core.gui.dialogs.nodecommands import NodeCommandsDialog
 from core.gui.dialogs.observers import ObserverDialog
 from core.gui.dialogs.preferences import PreferencesDialog
 from core.gui.dialogs.servers import ServersDialog
@@ -48,10 +49,10 @@ class Menubar(tk.Menu):
         self.app: "Application" = app
         self.core: CoreClient = app.core
         self.manager: CanvasManager = app.manager
-        self.recent_menu: Optional[tk.Menu] = None
-        self.edit_menu: Optional[tk.Menu] = None
-        self.canvas_menu: Optional[tk.Menu] = None
-        self.observers_menu: Optional[ObserversMenu] = None
+        self.recent_menu: tk.Menu | None = None
+        self.edit_menu: tk.Menu | None = None
+        self.canvas_menu: tk.Menu | None = None
+        self.observers_menu: ObserversMenu | None = None
         self.draw()
 
     def draw(self) -> None:
@@ -235,7 +236,11 @@ class Menubar(tk.Menu):
         menu.add_command(
             label="Configure Throughput", command=self.click_config_throughput
         )
-        menu.add_checkbutton(label="Enable Throughput?", command=self.click_throughput)
+        menu.add_checkbutton(
+            label="Enable Throughput?",
+            command=self.click_throughput,
+            variable=self.core.show_throughputs,
+        )
         widget_menu.add_cascade(label="Throughput", menu=menu)
 
     def draw_widgets_menu(self) -> None:
@@ -243,6 +248,7 @@ class Menubar(tk.Menu):
         Create widget menu
         """
         menu = tk.Menu(self)
+        menu.add_command(label="Node Commands", command=self.click_node_commands)
         self.create_observer_widgets_menu(menu)
         self.create_adjacency_menu(menu)
         self.create_throughput_menu(menu)
@@ -351,8 +357,13 @@ class Menubar(tk.Menu):
         result = True
         if self.core.is_runtime():
             result = messagebox.askyesnocancel("Exit", "Stop the running session?")
+        # cancel was clicked, avoid doing anything
+        if result is None:
+            return
+        # exit was selected, delete session
         if result:
             self.core.delete_session()
+        # we want to exist the app
         if quit_app:
             self.app.quit()
 
@@ -393,7 +404,7 @@ class Menubar(tk.Menu):
         dialog.show()
 
     def click_throughput(self) -> None:
-        if not self.core.handling_throughputs:
+        if self.core.show_throughputs.get():
             self.core.enable_throughputs()
         else:
             self.core.cancel_throughputs()
@@ -446,6 +457,10 @@ class Menubar(tk.Menu):
     def click_servers(self) -> None:
         logger.debug("Click emulation servers")
         dialog = ServersDialog(self.app)
+        dialog.show()
+
+    def click_node_commands(self) -> None:
+        dialog = NodeCommandsDialog(self.app)
         dialog.show()
 
     def click_edit_observer_widgets(self) -> None:

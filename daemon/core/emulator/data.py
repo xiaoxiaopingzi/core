@@ -2,38 +2,15 @@
 CORE data objects.
 """
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, List, Optional, Tuple
+from typing import TYPE_CHECKING, Any
 
 import netaddr
 
 from core import utils
-from core.emulator.enumerations import (
-    EventTypes,
-    ExceptionLevels,
-    LinkTypes,
-    MessageFlags,
-)
+from core.emulator.enumerations import AlertLevels, EventTypes, LinkTypes, MessageFlags
 
 if TYPE_CHECKING:
     from core.nodes.base import CoreNode, NodeBase
-
-
-@dataclass
-class ConfigData:
-    message_type: int = None
-    node: int = None
-    object: str = None
-    type: int = None
-    data_types: Tuple[int] = None
-    data_values: str = None
-    captions: str = None
-    bitmap: str = None
-    possible_values: str = None
-    groups: str = None
-    session: int = None
-    iface_id: int = None
-    network_id: int = None
-    opaque: str = None
 
 
 @dataclass
@@ -47,10 +24,10 @@ class EventData:
 
 
 @dataclass
-class ExceptionData:
+class AlertData:
     node: int = None
     session: int = None
-    level: ExceptionLevels = None
+    level: AlertLevels = None
     source: str = None
     date: str = None
     text: str = None
@@ -78,11 +55,10 @@ class NodeOptions:
     """
 
     name: str = None
-    model: Optional[str] = "PC"
+    model: str | None = "PC"
     canvas: int = None
     icon: str = None
-    services: List[str] = field(default_factory=list)
-    config_services: List[str] = field(default_factory=list)
+    services: list[str] = field(default_factory=list)
     x: float = None
     y: float = None
     lat: float = None
@@ -91,7 +67,10 @@ class NodeOptions:
     server: str = None
     image: str = None
     emane: str = None
-    legacy: bool = False
+    # src, dst
+    binds: list[tuple[str, str]] = field(default_factory=list)
+    # src, dst, unique, delete
+    volumes: list[tuple[str, str, bool, bool]] = field(default_factory=list)
 
     def set_position(self, x: float, y: float) -> None:
         """
@@ -144,7 +123,7 @@ class InterfaceData:
     ip6_mask: int = None
     mtu: int = None
 
-    def get_ips(self) -> List[str]:
+    def get_ips(self) -> list[str]:
         """
         Returns a list of ip4 and ip6 addresses when present.
 
@@ -172,7 +151,7 @@ class LinkOptions:
     mer: int = None
     burst: int = None
     mburst: int = None
-    unidirectional: int = None
+    unidirectional: bool = None
     key: int = None
     buffer: int = None
 
@@ -252,7 +231,7 @@ class LinkData:
     network_id: int = None
     iface1: InterfaceData = None
     iface2: InterfaceData = None
-    options: LinkOptions = LinkOptions()
+    options: LinkOptions = field(default_factory=LinkOptions)
     color: str = None
     source: str = None
 

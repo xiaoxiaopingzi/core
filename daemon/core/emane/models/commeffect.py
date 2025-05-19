@@ -4,7 +4,6 @@ commeffect.py: EMANE CommEffect model for CORE
 
 import logging
 from pathlib import Path
-from typing import Dict, List
 
 from lxml import etree
 
@@ -42,12 +41,12 @@ class EmaneCommEffectModel(emanemodel.EmaneModel):
     name: str = "emane_commeffect"
     shim_library: str = "commeffectshim"
     shim_xml: str = "commeffectshim.xml"
-    shim_defaults: Dict[str, str] = {}
-    config_shim: List[Configuration] = []
+    shim_defaults: dict[str, str] = {}
+    config_shim: list[Configuration] = []
 
     # comm effect does not need the default phy and external configurations
-    phy_config: List[Configuration] = []
-    external_config: List[Configuration] = []
+    phy_config: list[Configuration] = []
+    external_config: list[Configuration] = []
 
     @classmethod
     def load(cls, emane_prefix: Path) -> None:
@@ -56,11 +55,11 @@ class EmaneCommEffectModel(emanemodel.EmaneModel):
         cls.config_shim = emanemanifest.parse(shim_xml_path, cls.shim_defaults)
 
     @classmethod
-    def configurations(cls) -> List[Configuration]:
+    def configurations(cls) -> list[Configuration]:
         return cls.platform_config + cls.config_shim
 
     @classmethod
-    def config_groups(cls) -> List[ConfigGroup]:
+    def config_groups(cls) -> list[ConfigGroup]:
         platform_len = len(cls.platform_config)
         return [
             ConfigGroup("Platform Parameters", 1, platform_len),
@@ -71,7 +70,7 @@ class EmaneCommEffectModel(emanemodel.EmaneModel):
             ),
         ]
 
-    def build_xml_files(self, config: Dict[str, str], iface: CoreInterface) -> None:
+    def build_xml_files(self, config: dict[str, str], iface: CoreInterface) -> None:
         """
         Build the necessary nem and commeffect XMLs in the given path.
         If an individual NEM has a nonstandard config, we need to build
@@ -125,19 +124,17 @@ class EmaneCommEffectModel(emanemodel.EmaneModel):
         if iface is None or iface2 is None:
             logger.warning("%s: missing NEM information", self.name)
             return
-        # TODO: batch these into multiple events per transmission
-        # TODO: may want to split out seconds portion of delay and jitter
-        event = CommEffectEvent()
         nem1 = self.session.emane.get_nem_id(iface)
         nem2 = self.session.emane.get_nem_id(iface2)
         logger.info("sending comm effect event")
-        event.append(
+        bandwidth = int(convert_none(options.bandwidth))
+        self.session.emane.event_manager.publish_comm_effect(
             nem1,
-            latency=convert_none(options.delay),
+            nem2,
+            delay=convert_none(options.delay),
             jitter=convert_none(options.jitter),
             loss=convert_none(options.loss),
-            duplicate=convert_none(options.dup),
-            unicast=int(convert_none(options.bandwidth)),
-            broadcast=int(convert_none(options.bandwidth)),
+            dup=convert_none(options.dup),
+            unicast=bandwidth,
+            broadcast=bandwidth,
         )
-        self.session.emane.publish_event(nem2, event)

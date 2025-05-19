@@ -1,21 +1,23 @@
 import logging
+import re
 import tkinter as tk
 from functools import partial
 from pathlib import Path
 from tkinter import filedialog, font, ttk
-from typing import TYPE_CHECKING, Any, Callable, Dict, Set, Type
+from typing import TYPE_CHECKING, Any, Callable
 
 from core.api.grpc.wrappers import ConfigOption, ConfigOptionType
 from core.gui import appconfig, themes, validation
 from core.gui.dialogs.dialog import Dialog
 from core.gui.themes import FRAME_PAD, PADX, PADY
+from core.gui.tooltip import Tooltip
 
 logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from core.gui.app import Application
 
-INT_TYPES: Set[ConfigOptionType] = {
+INT_TYPES: set[ConfigOptionType] = {
     ConfigOptionType.UINT8,
     ConfigOptionType.UINT16,
     ConfigOptionType.UINT32,
@@ -40,8 +42,8 @@ class FrameScroll(ttk.Frame):
         self,
         master: tk.Widget,
         app: "Application",
-        _cls: Type[ttk.Frame] = ttk.Frame,
-        **kw: Any
+        _cls: type[ttk.Frame] = ttk.Frame,
+        **kw: Any,
     ) -> None:
         super().__init__(master, **kw)
         self.app: "Application" = app
@@ -86,14 +88,14 @@ class ConfigFrame(ttk.Notebook):
         self,
         master: tk.Widget,
         app: "Application",
-        config: Dict[str, ConfigOption],
+        config: dict[str, ConfigOption],
         enabled: bool = True,
-        **kw: Any
+        **kw: Any,
     ) -> None:
         super().__init__(master, **kw)
         self.app: "Application" = app
-        self.config: Dict[str, ConfigOption] = config
-        self.values: Dict[str, tk.StringVar] = {}
+        self.config: dict[str, ConfigOption] = config
+        self.values: dict[str, tk.StringVar] = {}
         self.enabled: bool = enabled
 
     def draw_config(self) -> None:
@@ -148,17 +150,19 @@ class ConfigFrame(ttk.Notebook):
                     else:
                         entry = ttk.Entry(tab.frame, textvariable=value, state=state)
                         entry.grid(row=index, column=1, sticky=tk.EW)
+                        if option.regex:
+                            Tooltip(entry, option.regex)
                 elif option.type in INT_TYPES:
                     value.set(option.value)
                     state = tk.NORMAL if self.enabled else tk.DISABLED
-                    entry = validation.PositiveIntEntry(
+                    entry = validation.IntEntry(
                         tab.frame, textvariable=value, state=state
                     )
                     entry.grid(row=index, column=1, sticky=tk.EW)
                 elif option.type == ConfigOptionType.FLOAT:
                     value.set(option.value)
                     state = tk.NORMAL if self.enabled else tk.DISABLED
-                    entry = validation.PositiveFloatEntry(
+                    entry = validation.FloatEntry(
                         tab.frame, textvariable=value, state=state
                     )
                     entry.grid(row=index, column=1, sticky=tk.EW)
@@ -166,7 +170,7 @@ class ConfigFrame(ttk.Notebook):
                     logger.error("unhandled config option type: %s", option.type)
                 self.values[option.name] = value
 
-    def parse_config(self) -> Dict[str, str]:
+    def parse_config(self) -> dict[str, str]:
         for key in self.config:
             option = self.config[key]
             value = self.values[key]
@@ -177,10 +181,16 @@ class ConfigFrame(ttk.Notebook):
                 else:
                     option.value = "0"
             else:
+                if option.regex:
+                    if not re.match(option.regex, config_value):
+                        raise ValueError(
+                            f"{option.label} value '{config_value}' "
+                            f"does not match regex '{option.regex}'"
+                        )
                 option.value = config_value
         return {x: self.config[x].value for x in self.config}
 
-    def set_values(self, config: Dict[str, str]) -> None:
+    def set_values(self, config: dict[str, str]) -> None:
         for name, data in config.items():
             option = self.config[name]
             value = self.values[name]
@@ -216,7 +226,7 @@ class CheckboxList(FrameScroll):
         master: ttk.Widget,
         app: "Application",
         clicked: Callable = None,
-        **kw: Any
+        **kw: Any,
     ) -> None:
         super().__init__(master, app, **kw)
         self.clicked: Callable = clicked
@@ -256,6 +266,13 @@ class CodeText(ttk.Frame):
         yscrollbar = ttk.Scrollbar(self, orient=tk.VERTICAL, command=self.text.yview)
         yscrollbar.grid(row=0, column=1, sticky=tk.NS)
         self.text.configure(yscrollcommand=yscrollbar.set)
+
+    def get_text(self) -> str:
+        return self.text.get(1.0, tk.END)
+
+    def set_text(self, text: str) -> None:
+        self.text.delete(1.0, tk.END)
+        self.text.insert(tk.END, text.rstrip())
 
 
 class Spinbox(ttk.Entry):

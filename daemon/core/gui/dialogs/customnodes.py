@@ -2,7 +2,7 @@ import logging
 import tkinter as tk
 from pathlib import Path
 from tkinter import ttk
-from typing import TYPE_CHECKING, Optional, Set
+from typing import TYPE_CHECKING
 
 from PIL.ImageTk import PhotoImage
 
@@ -21,13 +21,13 @@ if TYPE_CHECKING:
 
 class ServicesSelectDialog(Dialog):
     def __init__(
-        self, master: tk.BaseWidget, app: "Application", current_services: Set[str]
+        self, master: tk.BaseWidget, app: "Application", current_services: set[str]
     ) -> None:
         super().__init__(app, "Node Services", master=master)
-        self.groups: Optional[ListboxScroll] = None
-        self.services: Optional[CheckboxList] = None
-        self.current: Optional[ListboxScroll] = None
-        self.current_services: Set[str] = current_services
+        self.groups: ListboxScroll | None = None
+        self.services: CheckboxList | None = None
+        self.current: ListboxScroll | None = None
+        self.current_services: set[str] = current_services
         self.draw()
 
     def draw(self) -> None:
@@ -45,7 +45,7 @@ class ServicesSelectDialog(Dialog):
         label_frame.columnconfigure(0, weight=1)
         self.groups = ListboxScroll(label_frame)
         self.groups.grid(sticky=tk.NSEW)
-        for group in sorted(self.app.core.services):
+        for group in sorted(self.app.core.services_groups):
             self.groups.listbox.insert(tk.END, group)
         self.groups.listbox.bind("<<ListboxSelect>>", self.handle_group_change)
         self.groups.listbox.selection_set(0)
@@ -86,7 +86,7 @@ class ServicesSelectDialog(Dialog):
             index = selection[0]
             group = self.groups.listbox.get(index)
             self.services.clear()
-            for name in sorted(self.app.core.services[group]):
+            for name in sorted(self.app.core.services_groups[group]):
                 checked = name in self.current_services
                 self.services.add(name, checked)
 
@@ -107,16 +107,16 @@ class ServicesSelectDialog(Dialog):
 class CustomNodesDialog(Dialog):
     def __init__(self, app: "Application") -> None:
         super().__init__(app, "Custom Nodes")
-        self.edit_button: Optional[ttk.Button] = None
-        self.delete_button: Optional[ttk.Button] = None
-        self.nodes_list: Optional[ListboxScroll] = None
+        self.edit_button: ttk.Button | None = None
+        self.delete_button: ttk.Button | None = None
+        self.nodes_list: ListboxScroll | None = None
         self.name: tk.StringVar = tk.StringVar()
-        self.image_button: Optional[ttk.Button] = None
-        self.image: Optional[PhotoImage] = None
-        self.image_file: Optional[str] = None
-        self.services: Set[str] = set()
-        self.selected: Optional[str] = None
-        self.selected_index: Optional[int] = None
+        self.image_button: ttk.Button | None = None
+        self.image: PhotoImage | None = None
+        self.image_file: str | None = None
+        self.services: set[str] = set()
+        self.selected: str | None = None
+        self.selected_index: int | None = None
         self.draw()
 
     def draw(self) -> None:

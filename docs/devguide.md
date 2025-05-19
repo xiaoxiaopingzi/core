@@ -1,11 +1,8 @@
 # CORE Developer's Guide
 
-* Table of Contents
-{:toc}
+## Overview
 
-## Repository Overview
-
-The CORE source consists of several different programming languages for
+The CORE source consists of several programming languages for
 historical reasons. Current development focuses on the Python modules and
 daemon. Here is a brief description of the source directories.
 
@@ -13,7 +10,6 @@ daemon. Here is a brief description of the source directories.
 |-----------|--------------------------------------------------------------------------------------|
 | daemon    | Python CORE daemon/gui code that handles receiving API calls and creating containers |
 | docs      | Markdown Documentation currently hosted on GitHub                                    |
-| gui       | Tcl/Tk GUI                                                                           |
 | man       | Template files for creating man pages for various CORE command line utilities        |
 | netns     | C program for creating CORE containers                                               |
 
@@ -21,29 +17,53 @@ daemon. Here is a brief description of the source directories.
 
 To setup CORE for develop we will leverage to automated install script.
 
-## Clone CORE Repo
-
-```shell
-cd ~/Documents
-git clone https://github.com/coreemu/core.git
-cd core
-git checkout develop
-```
-
 ## Install the Development Environment
 
-This command will automatically install system dependencies, clone and build OSPF-MDR,
-build CORE, setup the CORE poetry environment, and install pre-commit hooks. You can
-refer to the [install docs](install.md) for issues related to different distributions.
+The current recommended development environment is Ubuntu 22.04. This section
+covers a complete example for installing CORE on a clean install. It will help
+setup CORE in development mode, OSPF MDR, and EMANE.
 
-```shell
-./install -d
+``` shell
+# install system packages
+sudo apt-get update -y
+sudo apt-get install -y ca-certificates git sudo wget tzdata libpcap-dev libpcre3-dev \
+    libprotobuf-dev libxml2-dev protobuf-compiler unzip uuid-dev iproute2 iputils-ping \
+    tcpdump
+
+# install core
+cd ~/Documents
+git clone https://github.com/coreemu/core
+cd core
+./setup.sh
+source ~/.bashrc
+inv install -d
+
+# install emane
+cd ~/Documents
+wget https://adjacentlink.com/downloads/emane/emane-1.5.1-release-1.ubuntu-22_04.amd64.tar.gz
+tar xf emane-1.5.1-release-1.ubuntu-22_04.amd64.tar.gz
+cd emane-1.5.1-release-1/debs/ubuntu-22_04/amd64
+sudo apt-get install -y ./openstatistic*.deb ./emane*.deb ./python3-emane_*.deb
+
+# install emane python bindings
+cd ~/Documents
+wget https://github.com/protocolbuffers/protobuf/releases/download/v3.19.6/protoc-3.19.6-linux-x86_64.zip
+mkdir protoc
+unzip protoc-3.19.6-linux-x86_64.zip -d protoc
+git clone https://github.com/adjacentlink/emane.git
+cd emane
+git checkout v1.5.1
+./autogen.sh
+./configure --prefix=/usr
+cd src/python
+PATH=~/Documents/protoc/bin:$PATH make
+sudo /opt/core/venv/bin/python -m pip install .
 ```
 
 ### pre-commit
 
 pre-commit hooks help automate running tools to check modified code. Every time a commit is made
-python utilities will be ran to check validity of code, potentially failing and backing out the commit.
+python utilities will be run to check validity of code, potentially failing and backing out the commit.
 These changes are currently mandated as part of the current CI, so add the changes and commit again.
 
 ## Running CORE
@@ -55,10 +75,7 @@ conveniently run tests, etc.
 # run core-daemon
 sudo core-daemon
 
-# run python gui
-core-pygui
-
-# run tcl gui
+# run gui
 core-gui
 
 # run mocked unit tests
@@ -68,10 +85,8 @@ inv test-mock
 
 ## Linux Network Namespace Commands
 
-Linux network namespace containers are often managed using the *Linux Container Tools* or *lxc-tools* package.
-The lxc-tools website is available here http://lxc.sourceforge.net/ for more information.  CORE does not use these
-management utilities, but includes its own set of tools for instantiating and configuring network namespace containers.
-This section describes these tools.
+CORE includes its own set of tools for instantiating and configuring network namespace
+containers. This section describes these tools.
 
 ### vnoded
 
@@ -104,7 +119,7 @@ vcmd -c /tmp/pycore.50160/n1 -- /sbin/ip -4 ro
 
 A script named *core-cleanup* is provided to clean up any running CORE emulations. It will attempt to kill any
 remaining vnoded processes, kill any EMANE processes, remove the :file:`/tmp/pycore.*` session directories, and remove
-any bridges or *nftables* rules.  With a *-d* option, it will also kill any running CORE daemon.
+any bridges or *nftables* rules. With a *-d* option, it will also kill any running CORE daemon.
 
 ### netns command
 

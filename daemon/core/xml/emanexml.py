@@ -1,18 +1,16 @@
 import logging
 from pathlib import Path
 from tempfile import NamedTemporaryFile
-from typing import TYPE_CHECKING, Dict, List, Optional, Set, Tuple
+from typing import TYPE_CHECKING
 
 from lxml import etree
 
 from core import utils
 from core.config import Configuration
 from core.emane.nodes import EmaneNet
-from core.emulator.distributed import DistributedServer
 from core.errors import CoreError
-from core.nodes.base import CoreNode, CoreNodeBase
+from core.nodes.base import CoreNode, NodeBase
 from core.nodes.interface import CoreInterface
-from core.xml import corexml
 
 logger = logging.getLogger(__name__)
 
@@ -22,7 +20,7 @@ if TYPE_CHECKING:
 _MAC_PREFIX = "02:02"
 
 
-def is_external(config: Dict[str, str]) -> bool:
+def is_external(config: dict[str, str]) -> bool:
     """
     Checks if the configuration is for an external transport.
 
@@ -32,7 +30,7 @@ def is_external(config: Dict[str, str]) -> bool:
     return config.get("external") == "1"
 
 
-def _value_to_params(value: str) -> Optional[Tuple[str]]:
+def _value_to_params(value: str) -> tuple[str] | None:
     """
     Helper to convert a parameter to a parameter tuple.
 
@@ -51,37 +49,8 @@ def _value_to_params(value: str) -> Optional[Tuple[str]]:
     return None
 
 
-def create_file(
-    xml_element: etree.Element,
-    doc_name: str,
-    file_path: Path,
-    server: DistributedServer = None,
-) -> None:
-    """
-    Create xml file.
-
-    :param xml_element: root element to write to file
-    :param doc_name: name to use in the emane doctype
-    :param file_path: file path to write xml file to
-    :param server: remote server to create file on
-    :return: nothing
-    """
-    doctype = (
-        f'<!DOCTYPE {doc_name} SYSTEM "file:///usr/share/emane/dtd/{doc_name}.dtd">'
-    )
-    if server:
-        temp = NamedTemporaryFile(delete=False)
-        temp_path = Path(temp.name)
-        corexml.write_xml_file(xml_element, temp_path, doctype=doctype)
-        temp.close()
-        server.remote_put(temp_path, file_path)
-        temp_path.unlink()
-    else:
-        corexml.write_xml_file(xml_element, file_path, doctype=doctype)
-
-
 def create_node_file(
-    node: CoreNodeBase, xml_element: etree.Element, doc_name: str, file_name: str
+    node: NodeBase, xml_element: etree.Element, doc_name: str, file_name: str
 ) -> None:
     """
     Create emane xml for an interface.
@@ -89,14 +58,31 @@ def create_node_file(
     :param node: node running emane
     :param xml_element: root element to write to file
     :param doc_name: name to use in the emane doctype
-    :param file_name: name of xml file
-    :return:
+    :param file_name: name of file to create
+    :return: nothing
     """
+    doctype = (
+        f'<!DOCTYPE {doc_name} SYSTEM "file:///usr/share/emane/dtd/{doc_name}.dtd">'
+    )
+    xml_data = etree.tostring(
+        xml_element, pretty_print=True, encoding="unicode", doctype=doctype
+    )
     if isinstance(node, CoreNode):
-        file_path = node.directory / file_name
+        file_path = Path(file_name)
+        node.create_file(file_path, xml_data)
     else:
-        file_path = node.session.directory / file_name
-    create_file(xml_element, doc_name, file_path, node.server)
+        file_name = node.session.directory / file_name
+        if node.server:
+            temp = NamedTemporaryFile(delete=False)
+            temp_path = Path(temp.name)
+            with temp_path.open("w") as f:
+                f.write(xml_data)
+            temp.close()
+            node.server.remote_put(temp_path, file_name)
+            temp_path.unlink()
+        else:
+            with file_name.open("w") as f:
+                f.write(xml_data)
 
 
 def add_param(xml_element: etree.Element, name: str, value: str) -> None:
@@ -113,9 +99,9 @@ def add_param(xml_element: etree.Element, name: str, value: str) -> None:
 
 def add_configurations(
     xml_element: etree.Element,
-    configurations: List[Configuration],
-    config: Dict[str, str],
-    config_ignore: Set,
+    configurations: list[Configuration],
+    config: dict[str, str],
+    config_ignore: set[str],
 ) -> None:
     """
     Add emane model configurations to xml element.
@@ -148,7 +134,7 @@ def build_platform_xml(
     nem_port: int,
     emane_net: EmaneNet,
     iface: CoreInterface,
-    config: Dict[str, str],
+    config: dict[str, str],
 ) -> None:
     """
     Create platform xml for a nem/interface.
@@ -162,12 +148,14 @@ def build_platform_xml(
     """
     # create top level platform element
     platform_element = etree.Element("platform")
-    for configuration in emane_net.model.platform_config:
+    for configuration in emane_net.wireless_model.platform_config:
         name = configuration.id
         value = config[configuration.id]
         add_param(platform_element, name, value)
     add_param(
-        platform_element, emane_net.model.platform_controlport, f"0.0.0.0:{nem_port}"
+        platform_element,
+        emane_net.wireless_model.platform_controlport,
+        f"0.0.0.0:{nem_port}",
     )
 
     # build nem xml
@@ -177,7 +165,7 @@ def build_platform_xml(
     )
 
     # create model based xml files
-    emane_net.model.build_xml_files(config, iface)
+    emane_net.wireless_model.build_xml_files(config, iface)
 
     # check if this is an external transport
     if is_external(config):
@@ -207,7 +195,7 @@ def build_platform_xml(
     create_node_file(iface.node, platform_element, doc_name, file_name)
 
 
-def create_transport_xml(iface: CoreInterface, config: Dict[str, str]) -> None:
+def create_transport_xml(iface: CoreInterface, config: dict[str, str]) -> None:
     """
     Build transport xml file for node and transport type.
 
@@ -222,7 +210,6 @@ def create_transport_xml(iface: CoreInterface, config: Dict[str, str]) -> None:
         library=f"trans{transport_type.value.lower()}",
     )
     add_param(transport_element, "bitrate", "0")
-
     # get emane model cnfiguration
     flowcontrol = config.get("flowcontrolenable", "0") == "1"
     if isinstance(iface.node, CoreNode):
@@ -233,12 +220,12 @@ def create_transport_xml(iface: CoreInterface, config: Dict[str, str]) -> None:
         if flowcontrol:
             add_param(transport_element, "flowcontrolenable", "on")
     doc_name = "transport"
-    transport_name = transport_file_name(iface)
-    create_node_file(iface.node, transport_element, doc_name, transport_name)
+    file_name = transport_file_name(iface)
+    create_node_file(iface.node, transport_element, doc_name, file_name)
 
 
 def create_phy_xml(
-    emane_model: "EmaneModel", iface: CoreInterface, config: Dict[str, str]
+    emane_model: "EmaneModel", iface: CoreInterface, config: dict[str, str]
 ) -> None:
     """
     Create the phy xml document.
@@ -259,7 +246,7 @@ def create_phy_xml(
 
 
 def create_mac_xml(
-    emane_model: "EmaneModel", iface: CoreInterface, config: Dict[str, str]
+    emane_model: "EmaneModel", iface: CoreInterface, config: dict[str, str]
 ) -> None:
     """
     Create the mac xml document.
@@ -282,7 +269,7 @@ def create_mac_xml(
 
 
 def create_nem_xml(
-    emane_model: "EmaneModel", iface: CoreInterface, config: Dict[str, str]
+    emane_model: "EmaneModel", iface: CoreInterface, config: dict[str, str]
 ) -> None:
     """
     Create the nem xml document.
@@ -302,40 +289,8 @@ def create_nem_xml(
     etree.SubElement(nem_element, "mac", definition=mac_name)
     phy_name = phy_file_name(iface)
     etree.SubElement(nem_element, "phy", definition=phy_name)
-    nem_name = nem_file_name(iface)
-    create_node_file(iface.node, nem_element, "nem", nem_name)
-
-
-def create_event_service_xml(
-    group: str,
-    port: str,
-    device: str,
-    file_directory: Path,
-    server: DistributedServer = None,
-) -> None:
-    """
-    Create a emane event service xml file.
-
-    :param group: event group
-    :param port: event port
-    :param device: event device
-    :param file_directory: directory to create  file in
-    :param server: remote server node
-            will run on, default is None for localhost
-    :return: nothing
-    """
-    event_element = etree.Element("emaneeventmsgsvc")
-    for name, value in (
-        ("group", group),
-        ("port", port),
-        ("device", device),
-        ("mcloop", "1"),
-        ("ttl", "32"),
-    ):
-        sub_element = etree.SubElement(event_element, name)
-        sub_element.text = value
-    file_path = file_directory / "libemaneeventservice.xml"
-    create_file(event_element, "emaneeventmsgsvc", file_path, server)
+    file_name = nem_file_name(iface)
+    create_node_file(iface.node, nem_element, "nem", file_name)
 
 
 def transport_file_name(iface: CoreInterface) -> str:

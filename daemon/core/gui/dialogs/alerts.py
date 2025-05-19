@@ -3,9 +3,9 @@ check engine light
 """
 import tkinter as tk
 from tkinter import ttk
-from typing import TYPE_CHECKING, Dict, Optional
+from typing import TYPE_CHECKING
 
-from core.api.grpc.wrappers import ExceptionEvent, ExceptionLevel
+from core.api.grpc.wrappers import AlertEvent, AlertLevel
 from core.gui.dialogs.dialog import Dialog
 from core.gui.themes import PADX, PADY
 from core.gui.widgets import CodeText
@@ -17,9 +17,9 @@ if TYPE_CHECKING:
 class AlertsDialog(Dialog):
     def __init__(self, app: "Application") -> None:
         super().__init__(app, "Alerts")
-        self.tree: Optional[ttk.Treeview] = None
-        self.codetext: Optional[CodeText] = None
-        self.alarm_map: Dict[int, ExceptionEvent] = {}
+        self.tree: ttk.Treeview | None = None
+        self.codetext: CodeText | None = None
+        self.alarm_map: dict[int, AlertEvent] = {}
         self.draw()
 
     def draw(self) -> None:
@@ -67,13 +67,13 @@ class AlertsDialog(Dialog):
             )
             self.alarm_map[insert_id] = exception
 
-        error_name = ExceptionLevel.ERROR.name
+        error_name = AlertLevel.ERROR.name
         self.tree.tag_configure(error_name, background="#ff6666")
-        fatal_name = ExceptionLevel.FATAL.name
+        fatal_name = AlertLevel.FATAL.name
         self.tree.tag_configure(fatal_name, background="#d9d9d9")
-        warning_name = ExceptionLevel.WARNING.name
+        warning_name = AlertLevel.WARNING.name
         self.tree.tag_configure(warning_name, background="#ffff99")
-        notice_name = ExceptionLevel.NOTICE.name
+        notice_name = AlertLevel.NOTICE.name
         self.tree.tag_configure(notice_name, background="#85e085")
 
         yscrollbar = ttk.Scrollbar(frame, orient="vertical", command=self.tree.yview)

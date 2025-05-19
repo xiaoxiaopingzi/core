@@ -1,7 +1,7 @@
 from enum import Enum
-from typing import Dict, Optional, Tuple
 
 from PIL import Image
+from PIL.Image import Resampling
 from PIL.ImageTk import PhotoImage
 
 from core.api.grpc.wrappers import Node, NodeType
@@ -12,7 +12,7 @@ ANTENNA_SIZE: int = 32
 BUTTON_SIZE: int = 16
 ERROR_SIZE: int = 24
 DIALOG_SIZE: int = 16
-IMAGES: Dict[str, str] = {}
+IMAGES: dict[str, str] = {}
 
 
 def load_all() -> None:
@@ -32,7 +32,7 @@ def from_file(
     width = int(width * scale)
     height = int(height * scale)
     image = Image.open(file_path)
-    image = image.resize((width, height), Image.ANTIALIAS)
+    image = image.resize((width, height), Resampling.LANCZOS)
     return PhotoImage(image)
 
 
@@ -53,6 +53,7 @@ class ImageEnum(Enum):
     LINK = "link"
     HUB = "hub"
     WLAN = "wlan"
+    WIRELESS = "wireless"
     EMANE = "emane"
     RJ45 = "rj45"
     TUNNEL = "tunnel"
@@ -77,7 +78,7 @@ class ImageEnum(Enum):
     EDITDELETE = "edit-delete"
     ANTENNA = "antenna"
     DOCKER = "docker"
-    LXC = "lxc"
+    PODMAN = "podman"
     ALERT = "alert"
     DELETE = "delete"
     SHUTDOWN = "shutdown"
@@ -86,24 +87,25 @@ class ImageEnum(Enum):
     SHADOW = "shadow"
 
 
-TYPE_MAP: Dict[Tuple[NodeType, str], ImageEnum] = {
+TYPE_MAP: dict[tuple[NodeType, str], ImageEnum] = {
     (NodeType.DEFAULT, "router"): ImageEnum.ROUTER,
     (NodeType.DEFAULT, "PC"): ImageEnum.PC,
     (NodeType.DEFAULT, "host"): ImageEnum.HOST,
     (NodeType.DEFAULT, "mdr"): ImageEnum.MDR,
     (NodeType.DEFAULT, "prouter"): ImageEnum.PROUTER,
-    (NodeType.HUB, ""): ImageEnum.HUB,
-    (NodeType.SWITCH, ""): ImageEnum.SWITCH,
-    (NodeType.WIRELESS_LAN, ""): ImageEnum.WLAN,
-    (NodeType.EMANE, ""): ImageEnum.EMANE,
-    (NodeType.RJ45, ""): ImageEnum.RJ45,
-    (NodeType.TUNNEL, ""): ImageEnum.TUNNEL,
-    (NodeType.DOCKER, ""): ImageEnum.DOCKER,
-    (NodeType.LXC, ""): ImageEnum.LXC,
+    (NodeType.HUB, None): ImageEnum.HUB,
+    (NodeType.SWITCH, None): ImageEnum.SWITCH,
+    (NodeType.WIRELESS_LAN, None): ImageEnum.WLAN,
+    (NodeType.WIRELESS, None): ImageEnum.WIRELESS,
+    (NodeType.EMANE, None): ImageEnum.EMANE,
+    (NodeType.RJ45, None): ImageEnum.RJ45,
+    (NodeType.TUNNEL, None): ImageEnum.TUNNEL,
+    (NodeType.DOCKER, None): ImageEnum.DOCKER,
+    (NodeType.PODMAN, None): ImageEnum.PODMAN,
 }
 
 
-def from_node(node: Node, *, scale: float) -> Optional[PhotoImage]:
+def from_node(node: Node, *, scale: float) -> PhotoImage | None:
     image = None
     image_enum = TYPE_MAP.get((node.type, node.model))
     if image_enum:

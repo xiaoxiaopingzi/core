@@ -3,8 +3,9 @@ input validation
 """
 import re
 import tkinter as tk
+from re import Pattern
 from tkinter import ttk
-from typing import Any, Optional, Pattern
+from typing import Any
 
 SMALLEST_SCALE: float = 0.5
 LARGEST_SCALE: float = 5.0
@@ -12,7 +13,7 @@ HEX_REGEX: Pattern = re.compile("^([#]([0-9]|[a-f])+)$|^[#]$")
 
 
 class ValidationEntry(ttk.Entry):
-    empty: Optional[str] = None
+    empty: str | None = None
 
     def __init__(
         self,
@@ -45,6 +46,19 @@ class PositiveIntEntry(ValidationEntry):
         try:
             value = int(s)
             return value >= 0
+        except ValueError:
+            return False
+
+
+class IntEntry(ValidationEntry):
+    empty: str = "0"
+
+    def is_valid(self, s: str) -> bool:
+        if not s:
+            return True
+        try:
+            int(s)
+            return True
         except ValueError:
             return False
 

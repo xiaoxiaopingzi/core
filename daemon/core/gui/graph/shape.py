@@ -1,5 +1,5 @@
 import logging
-from typing import TYPE_CHECKING, Any, Dict, List, Optional, Union
+from typing import TYPE_CHECKING, Any
 
 from core.gui.dialogs.shapemod import ShapeDialog
 from core.gui.graph import tags
@@ -53,8 +53,8 @@ class Shape:
         self.app: "Application" = app
         self.canvas: "CanvasGraph" = canvas
         self.shape_type: ShapeType = shape_type
-        self.id: Optional[int] = None
-        self.text_id: Optional[int] = None
+        self.id: int | None = None
+        self.text_id: int | None = None
         self.x1: float = x1
         self.y1: float = y1
         if x2 is None:
@@ -72,7 +72,7 @@ class Shape:
         self.draw()
 
     @classmethod
-    def from_metadata(cls, app: "Application", config: Dict[str, Any]) -> None:
+    def from_metadata(cls, app: "Application", config: dict[str, Any]) -> None:
         shape_type = config["type"]
         try:
             shape_type = ShapeType(shape_type)
@@ -144,7 +144,7 @@ class Shape:
             logger.error("unknown shape type: %s", self.shape_type)
         self.created = True
 
-    def get_font(self) -> List[Union[int, str]]:
+    def get_font(self) -> list[int | str]:
         font = [self.shape_data.font, self.shape_data.font_size]
         if self.shape_data.bold:
             font.append("bold")
@@ -198,7 +198,7 @@ class Shape:
         self.canvas.delete(self.id)
         self.canvas.delete(self.text_id)
 
-    def metadata(self) -> Dict[str, Union[str, int, bool]]:
+    def metadata(self) -> dict[str, str | int | bool]:
         coords = self.canvas.coords(self.id)
         # update coords to actual positions
         if len(coords) == 4:

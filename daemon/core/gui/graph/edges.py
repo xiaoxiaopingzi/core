@@ -2,10 +2,10 @@ import functools
 import logging
 import math
 import tkinter as tk
-from typing import TYPE_CHECKING, Optional, Tuple, Union
+from typing import TYPE_CHECKING, Optional, Union
 
 from core.api.grpc.wrappers import Interface, Link
-from core.gui import themes
+from core.gui import nodeutils, themes
 from core.gui.dialogs.linkconfig import LinkConfigurationDialog
 from core.gui.frames.link import EdgeInfoFrame, WirelessEdgeInfoFrame
 from core.gui.graph import tags
@@ -54,9 +54,9 @@ def create_edge_token(link: Link) -> str:
 
 def node_label_positions(
     src_x: int, src_y: int, dst_x: int, dst_y: int
-) -> Tuple[Tuple[float, float], Tuple[float, float]]:
+) -> tuple[tuple[float, float], tuple[float, float]]:
     v_x, v_y = dst_x - src_x, dst_y - src_y
-    v_len = math.sqrt(v_x ** 2 + v_y ** 2)
+    v_len = math.sqrt(v_x**2 + v_y**2)
     if v_len == 0:
         u_x, u_y = 0.0, 0.0
     else:
@@ -102,21 +102,21 @@ class Edge:
     ) -> None:
         self.app: "Application" = app
         self.manager: CanvasManager = app.manager
-        self.id: Optional[int] = None
-        self.id2: Optional[int] = None
+        self.id: int | None = None
+        self.id2: int | None = None
         self.src: "CanvasNode" = src
-        self.src_shadow: Optional[ShadowNode] = None
+        self.src_shadow: ShadowNode | None = None
         self.dst: Optional["CanvasNode"] = dst
-        self.dst_shadow: Optional[ShadowNode] = None
-        self.link: Optional[Link] = None
+        self.dst_shadow: ShadowNode | None = None
+        self.link: Link | None = None
         self.arc: int = 0
-        self.token: Optional[str] = None
-        self.src_label: Optional[int] = None
-        self.src_label2: Optional[int] = None
-        self.middle_label: Optional[int] = None
-        self.middle_label2: Optional[int] = None
-        self.dst_label: Optional[int] = None
-        self.dst_label2: Optional[int] = None
+        self.token: str | None = None
+        self.src_label: int | None = None
+        self.src_label2: int | None = None
+        self.middle_label: int | None = None
+        self.middle_label2: int | None = None
+        self.dst_label: int | None = None
+        self.dst_label2: int | None = None
         self.color: str = EDGE_COLOR
         self.width: int = EDGE_WIDTH
         self.linked_wireless: bool = False
@@ -128,8 +128,8 @@ class Edge:
         return self.width * self.app.app_scale
 
     def _get_arcpoint(
-        self, src_pos: Tuple[float, float], dst_pos: Tuple[float, float]
-    ) -> Tuple[float, float]:
+        self, src_pos: tuple[float, float], dst_pos: tuple[float, float]
+    ) -> tuple[float, float]:
         src_x, src_y = src_pos
         dst_x, dst_y = dst_pos
         mp_x = (src_x + dst_x) / 2
@@ -147,7 +147,7 @@ class Edge:
         perp_m = -1 / m
         b = mp_y - (perp_m * mp_x)
         # get arc x and y
-        offset = math.sqrt(self.arc ** 2 / (1 + (1 / m ** 2)))
+        offset = math.sqrt(self.arc**2 / (1 + (1 / m**2)))
         arc_x = mp_x
         if self.arc >= 0:
             arc_x += offset
@@ -167,7 +167,7 @@ class Edge:
             return False
         return self.src.canvas != self.dst.canvas
 
-    def draw(self, state: str) -> None:
+    def draw(self, state: str, organize: bool = True) -> None:
         if not self.has_shadows():
             dst = self.dst if self.dst else self.src
             self.id = self.draw_edge(self.src.canvas, self.src, dst, state)
@@ -188,9 +188,10 @@ class Edge:
             self.dst_shadow = self.src.canvas.get_shadow(self.dst)
             self.id = self.draw_edge(self.src.canvas, self.src, self.dst_shadow, state)
             self.id2 = self.draw_edge(self.dst.canvas, self.src_shadow, self.dst, state)
-        self.src.canvas.organize()
-        if self.has_shadows():
-            self.dst.canvas.organize()
+        if organize:
+            self.src.canvas.organize()
+            if self.has_shadows():
+                self.dst.canvas.organize()
 
     def draw_edge(
         self,
@@ -317,7 +318,7 @@ class Edge:
             if self.dst_label2:
                 self.dst.canvas.itemconfig(self.dst_label2, text=text)
 
-    def drawing(self, pos: Tuple[float, float]) -> None:
+    def drawing(self, pos: tuple[float, float]) -> None:
         src_x, src_y, _, _, _, _ = self.src.canvas.coords(self.id)
         src_pos = src_x, src_y
         self.moved(src_pos, pos)
@@ -368,7 +369,7 @@ class Edge:
         dst_pos = dst_x, dst_y
         self.moved(self.src.position(), dst_pos)
 
-    def moved(self, src_pos: Tuple[float, float], dst_pos: Tuple[float, float]) -> None:
+    def moved(self, src_pos: tuple[float, float], dst_pos: tuple[float, float]) -> None:
         arc_pos = self._get_arcpoint(src_pos, dst_pos)
         self.src.canvas.coords(self.id, *src_pos, *arc_pos, *dst_pos)
         if self.middle_label:
@@ -381,7 +382,7 @@ class Edge:
             self.src.canvas.coords(self.dst_label, *dst_pos)
 
     def moved2(
-        self, src_pos: Tuple[float, float], dst_pos: Tuple[float, float]
+        self, src_pos: tuple[float, float], dst_pos: tuple[float, float]
     ) -> None:
         arc_pos = self._get_arcpoint(src_pos, dst_pos)
         self.dst.canvas.coords(self.id2, *src_pos, *arc_pos, *dst_pos)
@@ -416,6 +417,8 @@ class Edge:
         self.src_label2 = None
         self.dst_label = None
         self.dst_label2 = None
+        if self.dst:
+            self.arc_common_edges()
 
     def hide(self) -> None:
         self.hidden = True
@@ -461,7 +464,7 @@ class Edge:
         else:
             raise ValueError(f"node({node.core_node.name}) does not belong to edge")
 
-    def other_iface(self, node: "CanvasNode") -> Optional[Interface]:
+    def other_iface(self, node: "CanvasNode") -> Interface | None:
         if self.src == node:
             return self.link.iface2 if self.link else None
         elif self.dst == node:
@@ -469,7 +472,7 @@ class Edge:
         else:
             raise ValueError(f"node({node.core_node.name}) does not belong to edge")
 
-    def iface(self, node: "CanvasNode") -> Optional[Interface]:
+    def iface(self, node: "CanvasNode") -> Interface | None:
         if self.src == node:
             return self.link.iface1 if self.link else None
         elif self.dst == node:
@@ -507,6 +510,7 @@ class CanvasWirelessEdge(Edge):
         if self.src.hidden or self.dst.hidden:
             self.hide()
         self.set_binding()
+        self.arc_common_edges()
 
     def set_binding(self) -> None:
         self.src.canvas.tag_bind(self.id, "<Button-1>", self.show_info)
@@ -528,17 +532,21 @@ class CanvasEdge(Edge):
     """
 
     def __init__(
-        self, app: "Application", src: "CanvasNode", dst: "CanvasNode" = None
+        self,
+        app: "Application",
+        src: "CanvasNode",
+        dst: "CanvasNode" = None,
+        organize: bool = True,
     ) -> None:
         """
         Create an instance of canvas edge object
         """
         super().__init__(app, src, dst)
-        self.text_src: Optional[int] = None
-        self.text_dst: Optional[int] = None
-        self.asymmetric_link: Optional[Link] = None
-        self.throughput: Optional[float] = None
-        self.draw(tk.NORMAL)
+        self.text_src: int | None = None
+        self.text_dst: int | None = None
+        self.asymmetric_link: Link | None = None
+        self.throughput: float | None = None
+        self.draw(tk.NORMAL, organize)
 
     def is_customized(self) -> bool:
         return self.width != EDGE_WIDTH or self.color != EDGE_COLOR
@@ -565,7 +573,7 @@ class CanvasEdge(Edge):
             label += f"{iface.ip6}/{iface.ip6_mask}"
         return label
 
-    def create_node_labels(self) -> Tuple[str, str]:
+    def create_node_labels(self) -> tuple[str, str]:
         label1 = None
         if self.link.iface1:
             label1 = self.iface_label(self.link.iface1)
@@ -623,7 +631,9 @@ class CanvasEdge(Edge):
         if not self.linked_wireless:
             self.draw_link_options()
 
-    def complete(self, dst: "CanvasNode", link: Link = None) -> None:
+    def complete(
+        self, dst: "CanvasNode", link: Link = None, organize: bool = True
+    ) -> None:
         logger.debug(
             "completing wired link from node(%s) to node(%s)",
             self.src.core_node.name,
@@ -635,10 +645,10 @@ class CanvasEdge(Edge):
         self.check_wireless()
         if link is None:
             link = self.app.core.ifaces_manager.create_link(self)
-        if link.iface1:
+        if link.iface1 and not nodeutils.is_rj45(self.src.core_node):
             iface1 = link.iface1
             self.src.ifaces[iface1.id] = iface1
-        if link.iface2:
+        if link.iface2 and not nodeutils.is_rj45(self.dst.core_node):
             iface2 = link.iface2
             self.dst.ifaces[iface2.id] = iface2
         self.token = create_edge_token(link)
@@ -650,9 +660,10 @@ class CanvasEdge(Edge):
         self.draw_labels()
         self.check_visibility()
         self.app.core.save_edge(self)
-        self.src.canvas.organize()
-        if self.has_shadows():
-            self.dst.canvas.organize()
+        if organize:
+            self.src.canvas.organize()
+            if self.has_shadows():
+                self.dst.canvas.organize()
         self.manager.edges[self.token] = self
 
     def check_wireless(self) -> None:
@@ -748,9 +759,9 @@ class CanvasEdge(Edge):
         self.src.edges.discard(self)
         if self.dst:
             self.dst.edges.discard(self)
-            if self.link.iface1:
+            if self.link.iface1 and not nodeutils.is_rj45(self.src.core_node):
                 del self.src.ifaces[self.link.iface1.id]
-            if self.link.iface2:
+            if self.link.iface2 and not nodeutils.is_rj45(self.dst.core_node):
                 del self.dst.ifaces[self.link.iface2.id]
             if self.src.is_wireless():
                 self.dst.delete_antenna()
@@ -758,6 +769,4 @@ class CanvasEdge(Edge):
                 self.src.delete_antenna()
             self.app.core.deleted_canvas_edges([self])
         super().delete()
-        if self.dst:
-            self.arc_common_edges()
         self.manager.edges.pop(self.token, None)

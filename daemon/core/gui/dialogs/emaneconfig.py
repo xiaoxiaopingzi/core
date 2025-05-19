@@ -3,8 +3,8 @@ emane configuration
 """
 import tkinter as tk
 import webbrowser
-from tkinter import ttk
-from typing import TYPE_CHECKING, Dict, List, Optional
+from tkinter import messagebox, ttk
+from typing import TYPE_CHECKING
 
 import grpc
 
@@ -32,16 +32,18 @@ class EmaneModelDialog(Dialog):
         self.node: Node = node
         self.model: str = f"emane_{model}"
         self.iface_id: int = iface_id
-        self.config_frame: Optional[ConfigFrame] = None
+        self.config_frame: ConfigFrame | None = None
         self.enabled: bool = not self.app.core.is_runtime()
         self.has_error: bool = False
         try:
             config = self.node.emane_model_configs.get((self.model, self.iface_id))
             if not config:
+                config = self.node.emane_model_configs.get((self.model, None))
+            if not config:
                 config = self.app.core.get_emane_model_config(
                     self.node.id, self.model, self.iface_id
                 )
-            self.config: Dict[str, ConfigOption] = config
+            self.config: dict[str, ConfigOption] = config
             self.draw()
         except grpc.RpcError as e:
             self.app.show_grpc_exception("Get EMANE Config Error", e)
@@ -68,10 +70,13 @@ class EmaneModelDialog(Dialog):
         button.grid(row=0, column=1, sticky=tk.EW)
 
     def click_apply(self) -> None:
-        self.config_frame.parse_config()
-        key = (self.model, self.iface_id)
-        self.node.emane_model_configs[key] = self.config
-        self.destroy()
+        try:
+            self.config_frame.parse_config()
+            key = (self.model, self.iface_id)
+            self.node.emane_model_configs[key] = self.config
+            self.destroy()
+        except ValueError as e:
+            messagebox.showerror("EMANE Config Error", str(e))
 
 
 class EmaneConfigDialog(Dialog):
@@ -80,12 +85,12 @@ class EmaneConfigDialog(Dialog):
         self.node: Node = node
         self.radiovar: tk.IntVar = tk.IntVar()
         self.radiovar.set(1)
-        self.emane_models: List[str] = [
+        self.emane_models: list[str] = [
             x.split("_")[1] for x in self.app.core.emane_models
         ]
         model = self.node.emane.split("_")[1]
         self.emane_model: tk.StringVar = tk.StringVar(value=model)
-        self.emane_model_button: Optional[ttk.Button] = None
+        self.emane_model_button: ttk.Button | None = None
         self.enabled: bool = not self.app.core.is_runtime()
         self.draw()
 

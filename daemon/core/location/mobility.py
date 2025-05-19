@@ -9,7 +9,7 @@ import threading
 import time
 from functools import total_ordering
 from pathlib import Path
-from typing import TYPE_CHECKING, Callable, Dict, List, Optional, Tuple, Union
+from typing import TYPE_CHECKING, Callable
 
 from core import utils
 from core.config import (
@@ -23,7 +23,7 @@ from core.config import (
     ModelManager,
 )
 from core.emane.nodes import EmaneNet
-from core.emulator.data import EventData, LinkData, LinkOptions
+from core.emulator.data import LinkData, LinkOptions
 from core.emulator.enumerations import EventTypes, LinkTypes, MessageFlags, RegisterTlvs
 from core.errors import CoreError
 from core.executables import BASH
@@ -40,14 +40,14 @@ LEARNING_DISABLED: int = 0
 LEARNING_ENABLED: int = 30000
 
 
-def get_mobility_node(session: "Session", node_id: int) -> Union[WlanNode, EmaneNet]:
+def get_mobility_node(session: "Session", node_id: int) -> WlanNode | EmaneNet:
     try:
         return session.get_node(node_id, WlanNode)
     except CoreError:
         return session.get_node(node_id, EmaneNet)
 
 
-def get_config_int(current: int, config: Dict[str, str], name: str) -> Optional[int]:
+def get_config_int(current: int, config: dict[str, str], name: str) -> int | None:
     """
     Convenience function to get config values as int.
 
@@ -63,8 +63,8 @@ def get_config_int(current: int, config: Dict[str, str], name: str) -> Optional[
 
 
 def get_config_float(
-    current: Union[int, float], config: Dict[str, str], name: str
-) -> Optional[float]:
+    current: int | float, config: dict[str, str], name: str
+) -> float | None:
     """
     Convenience function to get config values as float.
 
@@ -91,7 +91,6 @@ class MobilityManager(ModelManager):
     """
 
     name = "MobilityManager"
-    config_type = RegisterTlvs.WIRELESS
 
     def __init__(self, session: "Session") -> None:
         """
@@ -112,7 +111,7 @@ class MobilityManager(ModelManager):
         """
         self.config_reset()
 
-    def startup(self, node_ids: List[int] = None) -> None:
+    def startup(self, node_ids: list[int] = None) -> None:
         """
         Session is transitioning from instantiation to runtime state.
         Instantiate any mobility models that have been configured for a WLAN.
@@ -142,54 +141,6 @@ class MobilityManager(ModelManager):
                     "skipping mobility configuration for unknown node: %s", node_id
                 )
 
-    def handleevent(self, event_data: EventData) -> None:
-        """
-        Handle an Event Message used to start, stop, or pause
-        mobility scripts for a given mobility network.
-
-        :param event_data: event data to handle
-        :return: nothing
-        """
-        event_type = event_data.event_type
-        node_id = event_data.node
-        name = event_data.name
-        try:
-            node = get_mobility_node(self.session, node_id)
-        except CoreError:
-            logger.exception(
-                "ignoring event for model(%s), unknown node(%s)", name, node_id
-            )
-            return
-
-        # name is e.g. "mobility:ns2script"
-        models = name[9:].split(",")
-        for model in models:
-            cls = self.models.get(model)
-            if not cls:
-                logger.warning("ignoring event for unknown model '%s'", model)
-                continue
-            if cls.config_type in [RegisterTlvs.WIRELESS, RegisterTlvs.MOBILITY]:
-                model = node.mobility
-            else:
-                continue
-            if model is None:
-                logger.warning("ignoring event, %s has no model", node.name)
-                continue
-            if cls.name != model.name:
-                logger.warning(
-                    "ignoring event for %s wrong model %s,%s",
-                    node.name,
-                    cls.name,
-                    model.name,
-                )
-                continue
-            if event_type in [EventTypes.STOP, EventTypes.RESTART]:
-                model.stop(move_initial=True)
-            if event_type in [EventTypes.START, EventTypes.RESTART]:
-                model.start()
-            if event_type == EventTypes.PAUSE:
-                model.pause()
-
     def sendevent(self, model: "WayPointMobility") -> None:
         """
         Send an event message on behalf of a mobility model.
@@ -208,14 +159,9 @@ class MobilityManager(ModelManager):
         start_time = int(model.lasttime - model.timezero)
         end_time = int(model.endtime)
         data = f"start={start_time} end={end_time}"
-        event_data = EventData(
-            node=model.id,
-            event_type=event_type,
-            name=f"mobility:{model.name}",
-            data=data,
-            time=str(time.monotonic()),
+        self.session.broadcast_event(
+            event_type, node_id=model.id, name=f"mobility:{model.name}", data=data
         )
-        self.session.broadcast_event(event_data)
 
 
 class WirelessModel(ConfigurableOptions):
@@ -225,7 +171,6 @@ class WirelessModel(ConfigurableOptions):
     """
 
     config_type: RegisterTlvs = RegisterTlvs.WIRELESS
-    bitmap: str = None
     position_callback: Callable[[CoreInterface], None] = None
 
     def __init__(self, session: "Session", _id: int) -> None:
@@ -238,7 +183,7 @@ class WirelessModel(ConfigurableOptions):
         self.session: "Session" = session
         self.id: int = _id
 
-    def links(self, flags: MessageFlags = MessageFlags.NONE) -> List[LinkData]:
+    def links(self, flags: MessageFlags = MessageFlags.NONE) -> list[LinkData]:
         """
         May be used if the model can populate the GUI with wireless (green)
         link lines.
@@ -248,7 +193,7 @@ class WirelessModel(ConfigurableOptions):
         """
         return []
 
-    def update(self, moved_ifaces: List[CoreInterface]) -> None:
+    def update(self, moved_ifaces: list[CoreInterface]) -> None:
         """
         Update this wireless model.
 
@@ -257,7 +202,7 @@ class WirelessModel(ConfigurableOptions):
         """
         raise NotImplementedError
 
-    def update_config(self, config: Dict[str, str]) -> None:
+    def update_config(self, config: dict[str, str]) -> None:
         """
         For run-time updates of model config. Returns True when position callback and
         set link parameters should be invoked.
@@ -276,7 +221,7 @@ class BasicRangeModel(WirelessModel):
     """
 
     name: str = "basic_range"
-    options: List[Configuration] = [
+    options: list[Configuration] = [
         ConfigInt(id="range", default="275", label="wireless range (pixels)"),
         ConfigInt(id="bandwidth", default="54000000", label="bandwidth (bps)"),
         ConfigInt(id="jitter", default="0", label="transmission jitter (usec)"),
@@ -299,13 +244,13 @@ class BasicRangeModel(WirelessModel):
         super().__init__(session, _id)
         self.session: "Session" = session
         self.wlan: WlanNode = session.get_node(_id, WlanNode)
-        self.iface_to_pos: Dict[CoreInterface, Tuple[float, float, float]] = {}
+        self.iface_to_pos: dict[CoreInterface, tuple[float, float, float]] = {}
         self.iface_lock: threading.Lock = threading.Lock()
         self.range: int = 0
-        self.bw: Optional[int] = None
-        self.delay: Optional[int] = None
-        self.loss: Optional[float] = None
-        self.jitter: Optional[int] = None
+        self.bw: int | None = None
+        self.delay: int | None = None
+        self.loss: float | None = None
+        self.jitter: int | None = None
         self.promiscuous: bool = False
 
     def setlinkparams(self) -> None:
@@ -321,9 +266,9 @@ class BasicRangeModel(WirelessModel):
                     loss=self.loss,
                     jitter=self.jitter,
                 )
-                iface.config(options)
+                iface.update_options(options)
 
-    def get_position(self, iface: CoreInterface) -> Tuple[float, float, float]:
+    def get_position(self, iface: CoreInterface) -> tuple[float, float, float]:
         """
         Retrieve network interface position.
 
@@ -352,7 +297,7 @@ class BasicRangeModel(WirelessModel):
 
     position_callback = set_position
 
-    def update(self, moved_ifaces: List[CoreInterface]) -> None:
+    def update(self, moved_ifaces: list[CoreInterface]) -> None:
         """
         Node positions have changed without recalc. Update positions from
         node.position, then re-calculate links for those that have moved.
@@ -412,7 +357,7 @@ class BasicRangeModel(WirelessModel):
 
     @staticmethod
     def calcdistance(
-        p1: Tuple[float, float, float], p2: Tuple[float, float, float]
+        p1: tuple[float, float, float], p2: tuple[float, float, float]
     ) -> float:
         """
         Calculate the distance between two three-dimensional points.
@@ -428,7 +373,7 @@ class BasicRangeModel(WirelessModel):
             c = p1[2] - p2[2]
         return math.hypot(math.hypot(a, b), c)
 
-    def update_config(self, config: Dict[str, str]) -> None:
+    def update_config(self, config: dict[str, str]) -> None:
         """
         Configuration has changed during runtime.
 
@@ -467,8 +412,13 @@ class BasicRangeModel(WirelessModel):
             message_type=message_type,
             type=LinkTypes.WIRELESS,
             node1_id=iface1.node.id,
+            iface1=iface1.get_data(),
             node2_id=iface2.node.id,
+            iface2=iface2.get_data(),
             network_id=self.wlan.id,
+            options=LinkOptions(
+                bandwidth=self.bw, delay=self.delay, loss=self.loss, jitter=self.jitter
+            ),
             color=color,
         )
 
@@ -487,7 +437,7 @@ class BasicRangeModel(WirelessModel):
         link_data = self.create_link_data(iface, iface2, message_type)
         self.session.broadcast_link(link_data)
 
-    def links(self, flags: MessageFlags = MessageFlags.NONE) -> List[LinkData]:
+    def links(self, flags: MessageFlags = MessageFlags.NONE) -> list[LinkData]:
         """
         Return a list of wireless link messages for when the GUI reconnects.
 
@@ -513,7 +463,7 @@ class WayPoint:
         self,
         _time: float,
         node_id: int,
-        coords: Tuple[float, float, Optional[float]],
+        coords: tuple[float, float, float | None],
         speed: float,
     ) -> None:
         """
@@ -526,7 +476,7 @@ class WayPoint:
         """
         self.time: float = _time
         self.node_id: int = node_id
-        self.coords: Tuple[float, float, Optional[float]] = coords
+        self.coords: tuple[float, float, float | None] = coords
         self.speed: float = speed
 
     def __eq__(self, other: "WayPoint") -> bool:
@@ -563,14 +513,14 @@ class WayPointMobility(WirelessModel):
         """
         super().__init__(session=session, _id=_id)
         self.state: int = self.STATE_STOPPED
-        self.queue: List[WayPoint] = []
-        self.queue_copy: List[WayPoint] = []
-        self.points: Dict[int, WayPoint] = {}
-        self.initial: Dict[int, WayPoint] = {}
-        self.lasttime: Optional[float] = None
-        self.endtime: Optional[int] = None
+        self.queue: list[WayPoint] = []
+        self.queue_copy: list[WayPoint] = []
+        self.points: dict[int, WayPoint] = {}
+        self.initial: dict[int, WayPoint] = {}
+        self.lasttime: float | None = None
+        self.endtime: int | None = None
         self.timezero: float = 0.0
-        self.net: Union[WlanNode, EmaneNet] = get_mobility_node(self.session, self.id)
+        self.net: WlanNode | EmaneNet = get_mobility_node(self.session, self.id)
         # these are really set in child class via confmatrix
         self.loop: bool = False
         self.refresh_ms: int = 50
@@ -627,7 +577,7 @@ class WayPointMobility(WirelessModel):
                 moved_ifaces.append(iface)
 
         # calculate all ranges after moving nodes; this saves calculations
-        self.net.model.update(moved_ifaces)
+        self.net.wireless_model.update(moved_ifaces)
 
         # TODO: check session state
         self.session.event_loop.add_event(0.001 * self.refresh_ms, self.runround)
@@ -705,7 +655,7 @@ class WayPointMobility(WirelessModel):
             x, y, z = self.initial[node.id].coords
             self.setnodeposition(node, x, y, z)
             moved_ifaces.append(iface)
-        self.net.model.update(moved_ifaces)
+        self.net.wireless_model.update(moved_ifaces)
 
     def addwaypoint(
         self,
@@ -713,7 +663,7 @@ class WayPointMobility(WirelessModel):
         nodenum: int,
         x: float,
         y: float,
-        z: Optional[float],
+        z: float | None,
         speed: float,
     ) -> None:
         """
@@ -855,7 +805,7 @@ class Ns2ScriptedMobility(WayPointMobility):
     """
 
     name: str = "ns2script"
-    options: List[Configuration] = [
+    options: list[Configuration] = [
         ConfigString(id="file", label="mobility script file"),
         ConfigInt(id="refresh_ms", default="50", label="refresh time (ms)"),
         ConfigBool(id="loop", default="1", label="loop"),
@@ -867,7 +817,7 @@ class Ns2ScriptedMobility(WayPointMobility):
     ]
 
     @classmethod
-    def config_groups(cls) -> List[ConfigGroup]:
+    def config_groups(cls) -> list[ConfigGroup]:
         return [
             ConfigGroup("ns-2 Mobility Script Parameters", 1, len(cls.configurations()))
         ]
@@ -880,14 +830,14 @@ class Ns2ScriptedMobility(WayPointMobility):
         :param _id: object id
         """
         super().__init__(session, _id)
-        self.file: Optional[Path] = None
-        self.autostart: Optional[str] = None
-        self.nodemap: Dict[int, int] = {}
-        self.script_start: Optional[str] = None
-        self.script_pause: Optional[str] = None
-        self.script_stop: Optional[str] = None
+        self.file: Path | None = None
+        self.autostart: str | None = None
+        self.nodemap: dict[int, int] = {}
+        self.script_start: str | None = None
+        self.script_pause: str | None = None
+        self.script_stop: str | None = None
 
-    def update_config(self, config: Dict[str, str]) -> None:
+    def update_config(self, config: dict[str, str]) -> None:
         self.file = Path(config["file"])
         logger.info(
             "ns-2 scripted mobility configured for WLAN %d using file: %s",
@@ -916,7 +866,7 @@ class Ns2ScriptedMobility(WayPointMobility):
         file_path = self.findfile(self.file)
         try:
             f = file_path.open("r")
-        except IOError:
+        except OSError:
             logger.exception(
                 "ns-2 scripted mobility failed to load file: %s", self.file
             )

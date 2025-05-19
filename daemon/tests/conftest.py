@@ -7,18 +7,15 @@ import time
 
 import mock
 import pytest
-from mock.mock import MagicMock
 
 from core.api.grpc.client import InterfaceHelper
 from core.api.grpc.server import CoreGrpcServer
-from core.api.tlv.corehandlers import CoreHandler
 from core.emulator.coreemu import CoreEmu
 from core.emulator.data import IpPrefixes
 from core.emulator.distributed import DistributedServer
 from core.emulator.enumerations import EventTypes
 from core.emulator.session import Session
 from core.nodes.base import CoreNode
-from core.nodes.netclient import LinuxNetClient
 
 EMANE_SERVICES = "zebra|OSPFv3MDR|IPForward"
 
@@ -53,16 +50,12 @@ def patcher(request):
     patch_manager = PatchManager()
     patch_manager.patch_obj(DistributedServer, "remote_cmd", return_value="1")
     if request.config.getoption("mock"):
-        patch_manager.patch("os.mkdir")
         patch_manager.patch("core.utils.cmd")
         patch_manager.patch("core.utils.which")
+        patch_manager.patch("core.emulator.hooks._run_callback")
+        patch_manager.patch("core.emulator.hooks._run_script")
         patch_manager.patch("core.nodes.netclient.get_net_client")
-        patch_manager.patch_obj(
-            LinuxNetClient, "get_mac", return_value="00:00:00:00:00:00"
-        )
         patch_manager.patch_obj(CoreNode, "create_file")
-        patch_manager.patch_obj(Session, "write_state")
-        patch_manager.patch_obj(Session, "write_nodes")
     yield patch_manager
     patch_manager.shutdown()
 
@@ -104,17 +97,6 @@ def module_grpc(global_coreemu):
     grpc_server.server.stop(None)
 
 
-@pytest.fixture(scope="module")
-def module_coretlv(patcher, global_coreemu, global_session):
-    request_mock = MagicMock()
-    request_mock.fileno = MagicMock(return_value=1)
-    server = MockServer(global_coreemu)
-    request_handler = CoreHandler(request_mock, "", server)
-    request_handler.session = global_session
-    request_handler.add_session_handlers()
-    yield request_handler
-
-
 @pytest.fixture
 def grpc_server(module_grpc):
     yield module_grpc
@@ -127,17 +109,8 @@ def grpc_server(module_grpc):
 def session(global_session):
     global_session.set_state(EventTypes.CONFIGURATION_STATE)
     yield global_session
+    global_session.data_collect()
     global_session.clear()
-
-
-@pytest.fixture
-def coretlv(module_coretlv):
-    session = module_coretlv.session
-    session.set_state(EventTypes.CONFIGURATION_STATE)
-    coreemu = module_coretlv.coreemu
-    coreemu.sessions[session.id] = session
-    yield module_coretlv
-    coreemu.shutdown()
 
 
 def pytest_addoption(parser):

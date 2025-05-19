@@ -1,33 +1,34 @@
-import atexit
 import logging
 import os
 import re
+import signal
+import sys
 import tempfile
 import time
+from collections.abc import Iterable
 from concurrent import futures
 from pathlib import Path
-from typing import Iterable, Optional, Pattern, Type
+from re import Pattern
 
 import grpc
 from grpc import ServicerContext
 
 from core import utils
-from core.api.grpc import (
-    common_pb2,
-    configservices_pb2,
-    core_pb2,
-    core_pb2_grpc,
-    grpcutils,
+from core.api.grpc import common_pb2, core_pb2, core_pb2_grpc, grpcutils, services_pb2
+from core.api.grpc.core_pb2 import (
+    ExecuteScriptResponse,
+    GetWirelessConfigRequest,
+    GetWirelessConfigResponse,
+    LinkedRequest,
+    LinkedResponse,
+    WirelessConfigRequest,
+    WirelessConfigResponse,
+    WirelessLinkedRequest,
+    WirelessLinkedResponse,
 )
-from core.api.grpc.configservices_pb2 import (
-    ConfigService,
-    GetConfigServiceDefaultsRequest,
-    GetConfigServiceDefaultsResponse,
-    GetNodeConfigServiceRequest,
-    GetNodeConfigServiceResponse,
-)
-from core.api.grpc.core_pb2 import ExecuteScriptResponse
 from core.api.grpc.emane_pb2 import (
+    EmaneEventsRequest,
+    EmaneEventsResponse,
     EmaneLinkRequest,
     EmaneLinkResponse,
     EmanePathlossesRequest,
@@ -51,18 +52,17 @@ from core.api.grpc.mobility_pb2 import (
     SetMobilityConfigResponse,
 )
 from core.api.grpc.services_pb2 import (
-    GetNodeServiceFileRequest,
-    GetNodeServiceFileResponse,
+    CreateServiceRequest,
+    CreateServiceResponse,
     GetNodeServiceRequest,
     GetNodeServiceResponse,
     GetServiceDefaultsRequest,
     GetServiceDefaultsResponse,
-    Service,
+    GetServiceRenderedRequest,
+    GetServiceRenderedResponse,
     ServiceAction,
     ServiceActionRequest,
     ServiceActionResponse,
-    SetServiceDefaultsRequest,
-    SetServiceDefaultsResponse,
 )
 from core.api.grpc.wlan_pb2 import (
     GetWlanConfigRequest,
@@ -72,26 +72,26 @@ from core.api.grpc.wlan_pb2 import (
     WlanLinkRequest,
     WlanLinkResponse,
 )
-from core.configservice.base import ConfigServiceBootError
 from core.emane.modelmanager import EmaneModelManager
 from core.emulator.coreemu import CoreEmu
 from core.emulator.data import InterfaceData, LinkData, LinkOptions
-from core.emulator.enumerations import (
-    EventTypes,
-    ExceptionLevels,
-    LinkTypes,
-    MessageFlags,
-)
+from core.emulator.enumerations import AlertLevels, EventTypes, MessageFlags, NodeTypes
 from core.emulator.session import NT, Session
 from core.errors import CoreCommandError, CoreError
 from core.location.mobility import BasicRangeModel, Ns2ScriptedMobility
 from core.nodes.base import CoreNode, NodeBase
-from core.nodes.network import WlanNode
-from core.services.coreservices import ServiceManager
+from core.nodes.network import CoreNetwork, WlanNode
+from core.nodes.wireless import WirelessNode
+from core.services.base import (
+    CoreService,
+    CustomCoreService,
+    ServiceBootError,
+    ServiceMode,
+)
+from core.xml.corexml import CoreXmlWriter
 
 logger = logging.getLogger(__name__)
-_ONE_DAY_IN_SECONDS: int = 60 * 60 * 24
-_INTERFACE_REGEX: Pattern = re.compile(r"veth(?P<node>[0-9a-fA-F]+)")
+_INTERFACE_REGEX: Pattern[str] = re.compile(r"beth(?P<node>[0-9a-fA-F]+)")
 _MAX_WORKERS = 1000
 
 
@@ -106,12 +106,21 @@ class CoreGrpcServer(core_pb2_grpc.CoreApiServicer):
         super().__init__()
         self.coreemu: CoreEmu = coreemu
         self.running: bool = True
-        self.server: Optional[grpc.Server] = None
-        atexit.register(self._exit_handler)
+        self.server: grpc.Server | None = None
+        # catch signals
+        signal.signal(signal.SIGHUP, self._signal_handler)
+        signal.signal(signal.SIGINT, self._signal_handler)
+        signal.signal(signal.SIGTERM, self._signal_handler)
+        signal.signal(signal.SIGUSR1, self._signal_handler)
+        signal.signal(signal.SIGUSR2, self._signal_handler)
 
-    def _exit_handler(self) -> None:
-        logger.debug("catching exit, stop running")
+    def _signal_handler(self, signal_number: int, _) -> None:
+        logger.info("caught signal: %s", signal_number)
+        self.coreemu.shutdown()
         self.running = False
+        if self.server:
+            self.server.stop(None)
+        sys.exit(signal_number)
 
     def _is_running(self, context) -> bool:
         return self.running and context.is_active()
@@ -125,10 +134,8 @@ class CoreGrpcServer(core_pb2_grpc.CoreApiServicer):
         core_pb2_grpc.add_CoreApiServicer_to_server(self, self.server)
         self.server.add_insecure_port(address)
         self.server.start()
-
         try:
-            while True:
-                time.sleep(_ONE_DAY_IN_SECONDS)
+            self.server.wait_for_termination()
         except KeyboardInterrupt:
             self.server.stop(None)
 
@@ -148,7 +155,7 @@ class CoreGrpcServer(core_pb2_grpc.CoreApiServicer):
         return session
 
     def get_node(
-        self, session: Session, node_id: int, context: ServicerContext, _class: Type[NT]
+        self, session: Session, node_id: int, context: ServicerContext, _class: type[NT]
     ) -> NT:
         """
         Retrieve node given session and node id
@@ -187,7 +194,7 @@ class CoreGrpcServer(core_pb2_grpc.CoreApiServicer):
 
     def validate_service(
         self, name: str, context: ServicerContext
-    ) -> Type[ConfigService]:
+    ) -> type[CoreService]:
         """
         Validates a configuration service is a valid known service.
 
@@ -205,13 +212,8 @@ class CoreGrpcServer(core_pb2_grpc.CoreApiServicer):
         self, request: core_pb2.GetConfigRequest, context: ServicerContext
     ) -> core_pb2.GetConfigResponse:
         services = []
-        for name in ServiceManager.services:
-            service = ServiceManager.services[name]
-            service_proto = Service(group=service.group, name=service.name)
-            services.append(service_proto)
-        config_services = []
         for service in self.coreemu.service_manager.services.values():
-            service_proto = ConfigService(
+            service_proto = services_pb2.Service(
                 name=service.name,
                 group=service.group,
                 executables=service.executables,
@@ -225,13 +227,9 @@ class CoreGrpcServer(core_pb2_grpc.CoreApiServicer):
                 validation_timer=service.validation_timer,
                 validation_period=service.validation_period,
             )
-            config_services.append(service_proto)
+            services.append(service_proto)
         emane_models = [x.name for x in EmaneModelManager.models.values()]
-        return core_pb2.GetConfigResponse(
-            services=services,
-            config_services=config_services,
-            emane_models=emane_models,
-        )
+        return core_pb2.GetConfigResponse(services=services, emane_models=emane_models)
 
     def StartSession(
         self, request: core_pb2.StartSessionRequest, context: ServicerContext
@@ -248,19 +246,21 @@ class CoreGrpcServer(core_pb2_grpc.CoreApiServicer):
 
         # clear previous state and setup for creation
         session.clear()
+        session.directory.mkdir(exist_ok=True)
         if request.definition:
             state = EventTypes.DEFINITION_STATE
         else:
             state = EventTypes.CONFIGURATION_STATE
-        session.directory.mkdir(exist_ok=True)
         session.set_state(state)
-        session.user = request.session.user
+        if request.session.user:
+            session.set_user(request.session.user)
 
         # session options
-        session.options.config_reset()
         for option in request.session.options.values():
-            session.options.set_config(option.name, option.value)
+            if option.value:
+                session.options.set(option.name, option.value)
         session.metadata = dict(request.session.metadata)
+        session.parse_options()
 
         # add servers
         for server in request.session.servers:
@@ -378,11 +378,11 @@ class CoreGrpcServer(core_pb2_grpc.CoreApiServicer):
         self, request: core_pb2.GetSessionsRequest, context: ServicerContext
     ) -> core_pb2.GetSessionsResponse:
         """
-        Delete the session
+        Get all currently known session overviews.
 
-        :param request: get-session request
+        :param request: get sessions request
         :param context: context object
-        :return: a delete-session response
+        :return: a get sessions response
         """
         logger.debug("get sessions: %s", request)
         sessions = []
@@ -431,9 +431,9 @@ class CoreGrpcServer(core_pb2_grpc.CoreApiServicer):
         self, request: core_pb2.SessionAlertRequest, context: ServicerContext
     ) -> core_pb2.SessionAlertResponse:
         session = self.get_session(request.session_id, context)
-        level = ExceptionLevels(request.level)
+        level = AlertLevels(request.level)
         node_id = request.node_id if request.node_id else None
-        session.exception(level, request.source, request.text, node_id)
+        session.broadcast_alert(level, request.source, request.text, node_id)
         return core_pb2.SessionAlertResponse(result=True)
 
     def Events(self, request: core_pb2.EventsRequest, context: ServicerContext) -> None:
@@ -469,7 +469,6 @@ class CoreGrpcServer(core_pb2_grpc.CoreApiServicer):
         while self._is_running(context):
             now = time.monotonic()
             stats = get_net_stats()
-
             # calculate average
             if last_check is not None:
                 interval = now - last_check
@@ -486,7 +485,7 @@ class CoreGrpcServer(core_pb2_grpc.CoreApiServicer):
                         (current_rxtx["tx"] - previous_rxtx["tx"]) * 8.0 / interval
                     )
                     throughput = rx_kbps + tx_kbps
-                    if key.startswith("veth"):
+                    if key.startswith("beth"):
                         key = key.split(".")
                         node_id = _INTERFACE_REGEX.search(key[0]).group("node")
                         node_id = int(node_id, base=16)
@@ -512,7 +511,6 @@ class CoreGrpcServer(core_pb2_grpc.CoreApiServicer):
                             bridge_throughput.throughput = throughput
                         except ValueError:
                             pass
-
                 yield throughputs_event
 
             last_check = now
@@ -540,9 +538,17 @@ class CoreGrpcServer(core_pb2_grpc.CoreApiServicer):
         """
         logger.debug("add node: %s", request)
         session = self.get_session(request.session_id, context)
-        _type, _id, options = grpcutils.add_node_data(request.node)
+        _type = NodeTypes(request.node.type)
         _class = session.get_node_class(_type)
-        node = session.add_node(_class, _id, options)
+        position, options = grpcutils.add_node_data(_class, request.node)
+        node = session.add_node(
+            _class,
+            request.node.id or None,
+            request.node.name or None,
+            request.node.server or None,
+            position,
+            options,
+        )
         grpcutils.configure_node(session, request.node, node, context)
         source = request.source if request.source else None
         session.broadcast_node(node, MessageFlags.ADD, source)
@@ -564,12 +570,12 @@ class CoreGrpcServer(core_pb2_grpc.CoreApiServicer):
         ifaces = []
         for iface_id in node.ifaces:
             iface = node.ifaces[iface_id]
-            iface_proto = grpcutils.iface_to_proto(request.node_id, iface)
+            iface_proto = grpcutils.iface_to_proto(session, iface)
             ifaces.append(iface_proto)
         emane_configs = grpcutils.get_emane_model_configs_dict(session)
         node_emane_configs = emane_configs.get(node.id, [])
         node_proto = grpcutils.get_node_proto(session, node, node_emane_configs)
-        links = get_links(node)
+        links = get_links(session, node)
         return core_pb2.GetNodeResponse(node=node_proto, ifaces=ifaces, links=links)
 
     def MoveNode(
@@ -705,18 +711,22 @@ class CoreGrpcServer(core_pb2_grpc.CoreApiServicer):
         node2_id = request.link.node2_id
         self.get_node(session, node1_id, context, NodeBase)
         self.get_node(session, node2_id, context, NodeBase)
-        iface1_data, iface2_data, options, link_type = grpcutils.add_link_data(
-            request.link
-        )
+        iface1_data, iface2_data, options = grpcutils.add_link_data(request.link)
         node1_iface, node2_iface = session.add_link(
-            node1_id, node2_id, iface1_data, iface2_data, options, link_type
+            node1_id, node2_id, iface1_data, iface2_data, options
         )
         iface1_data = None
         if node1_iface:
-            iface1_data = grpcutils.iface_to_data(node1_iface)
+            if isinstance(node1_iface.node, CoreNetwork):
+                iface1_data = InterfaceData(id=node1_iface.id)
+            else:
+                iface1_data = node1_iface.get_data()
         iface2_data = None
         if node2_iface:
-            iface2_data = grpcutils.iface_to_data(node2_iface)
+            if isinstance(node2_iface.node, CoreNetwork):
+                iface2_data = InterfaceData(id=node2_iface.id)
+            else:
+                iface2_data = node2_iface.get_data()
         source = request.source if request.source else None
         link_data = LinkData(
             message_type=MessageFlags.ADD,
@@ -731,9 +741,9 @@ class CoreGrpcServer(core_pb2_grpc.CoreApiServicer):
         iface1_proto = None
         iface2_proto = None
         if node1_iface:
-            iface1_proto = grpcutils.iface_to_proto(node1_id, node1_iface)
+            iface1_proto = grpcutils.iface_to_proto(session, node1_iface)
         if node2_iface:
-            iface2_proto = grpcutils.iface_to_proto(node2_id, node2_iface)
+            iface2_proto = grpcutils.iface_to_proto(session, node2_iface)
         return core_pb2.AddLinkResponse(
             result=True, iface1=iface1_proto, iface2=iface2_proto
         )
@@ -849,7 +859,9 @@ class CoreGrpcServer(core_pb2_grpc.CoreApiServicer):
         session = self.get_session(request.session_id, context)
         mobility_config = request.mobility_config
         session.mobility.set_model_config(
-            mobility_config.node_id, Ns2ScriptedMobility.name, mobility_config.config
+            mobility_config.node_id,
+            Ns2ScriptedMobility.name,
+            dict(mobility_config.config),
         )
         return SetMobilityConfigResponse(result=True)
 
@@ -882,124 +894,11 @@ class CoreGrpcServer(core_pb2_grpc.CoreApiServicer):
             result = False
         return MobilityActionResponse(result=result)
 
-    def GetServiceDefaults(
-        self, request: GetServiceDefaultsRequest, context: ServicerContext
-    ) -> GetServiceDefaultsResponse:
-        """
-        Retrieve all the default services of all node types in a session
-
-        :param request: get-default-service request
-        :param context: context object
-        :return: get-service-defaults response about all the available default services
-        """
-        logger.debug("get service defaults: %s", request)
-        session = self.get_session(request.session_id, context)
-        defaults = grpcutils.get_default_services(session)
-        return GetServiceDefaultsResponse(defaults=defaults)
-
-    def SetServiceDefaults(
-        self, request: SetServiceDefaultsRequest, context: ServicerContext
-    ) -> SetServiceDefaultsResponse:
-        """
-        Set new default services to the session after whipping out the old ones
-
-        :param request: set-service-defaults request
-        :param context: context object
-        :return: set-service-defaults response
-        """
-        logger.debug("set service defaults: %s", request)
-        session = self.get_session(request.session_id, context)
-        session.services.default_services.clear()
-        for service_defaults in request.defaults:
-            session.services.default_services[
-                service_defaults.node_type
-            ] = service_defaults.services
-        return SetServiceDefaultsResponse(result=True)
-
-    def GetNodeService(
-        self, request: GetNodeServiceRequest, context: ServicerContext
-    ) -> GetNodeServiceResponse:
-        """
-        Retrieve a requested service from a node
-
-        :param request: get-node-service
-            request
-        :param context: context object
-        :return: get-node-service response about the requested service
-        """
-        logger.debug("get node service: %s", request)
-        session = self.get_session(request.session_id, context)
-        service = session.services.get_service(
-            request.node_id, request.service, default_service=True
-        )
-        service_proto = grpcutils.get_service_configuration(service)
-        return GetNodeServiceResponse(service=service_proto)
-
-    def GetNodeServiceFile(
-        self, request: GetNodeServiceFileRequest, context: ServicerContext
-    ) -> GetNodeServiceFileResponse:
-        """
-        Retrieve a requested service file from a node
-
-        :param request:
-            get-node-service request
-        :param context: context object
-        :return: get-node-service response about the requested service
-        """
-        logger.debug("get node service file: %s", request)
-        session = self.get_session(request.session_id, context)
-        node = self.get_node(session, request.node_id, context, CoreNode)
-        file_data = session.services.get_service_file(
-            node, request.service, request.file
-        )
-        return GetNodeServiceFileResponse(data=file_data.data)
-
     def ServiceAction(
         self, request: ServiceActionRequest, context: ServicerContext
     ) -> ServiceActionResponse:
         """
-        Take action whether to start, stop, restart, validate the service or none of
-        the above.
-
-        :param request: service-action request
-        :param context: context object
-        :return: service-action response about status of action
-        """
-        logger.debug("service action: %s", request)
-        session = self.get_session(request.session_id, context)
-        node = self.get_node(session, request.node_id, context, CoreNode)
-        service = None
-        for current_service in node.services:
-            if current_service.name == request.service:
-                service = current_service
-                break
-
-        if not service:
-            context.abort(grpc.StatusCode.NOT_FOUND, "service not found")
-
-        status = -1
-        if request.action == ServiceAction.START:
-            status = session.services.startup_service(node, service, wait=True)
-        elif request.action == ServiceAction.STOP:
-            status = session.services.stop_service(node, service)
-        elif request.action == ServiceAction.RESTART:
-            status = session.services.stop_service(node, service)
-            if not status:
-                status = session.services.startup_service(node, service, wait=True)
-        elif request.action == ServiceAction.VALIDATE:
-            status = session.services.validate_service(node, service)
-
-        result = False
-        if not status:
-            result = True
-
-        return ServiceActionResponse(result=result)
-
-    def ConfigServiceAction(
-        self, request: ServiceActionRequest, context: ServicerContext
-    ) -> ServiceActionResponse:
-        """
-        Take action whether to start, stop, restart, validate the config service or
+        Take action whether to start, stop, restart, validate the service or
         none of the above.
 
         :param request: service action request
@@ -1009,15 +908,17 @@ class CoreGrpcServer(core_pb2_grpc.CoreApiServicer):
         logger.debug("service action: %s", request)
         session = self.get_session(request.session_id, context)
         node = self.get_node(session, request.node_id, context, CoreNode)
-        service = node.config_services.get(request.service)
+        service = node.services.get(request.service)
         if not service:
-            context.abort(grpc.StatusCode.NOT_FOUND, "config service not found")
+            context.abort(
+                grpc.StatusCode.NOT_FOUND, f"service({request.service}) not found"
+            )
         result = False
         if request.action == ServiceAction.START:
             try:
                 service.start()
                 result = True
-            except ConfigServiceBootError:
+            except ServiceBootError:
                 pass
         elif request.action == ServiceAction.STOP:
             service.stop()
@@ -1027,13 +928,13 @@ class CoreGrpcServer(core_pb2_grpc.CoreApiServicer):
             try:
                 service.start()
                 result = True
-            except ConfigServiceBootError:
+            except ServiceBootError:
                 pass
         elif request.action == ServiceAction.VALIDATE:
             try:
                 service.run_validation()
                 result = True
-            except ConfigServiceBootError:
+            except ServiceBootError:
                 pass
         return ServiceActionResponse(result=result)
 
@@ -1068,9 +969,9 @@ class CoreGrpcServer(core_pb2_grpc.CoreApiServicer):
         logger.debug("set wlan config: %s", request)
         session = self.get_session(request.session_id, context)
         node_id = request.wlan_config.node_id
-        config = request.wlan_config.config
+        config = dict(request.wlan_config.config)
         session.mobility.set_model_config(node_id, BasicRangeModel.name, config)
-        if session.state == EventTypes.RUNTIME_STATE:
+        if session.is_running():
             node = self.get_node(session, node_id, context, WlanNode)
             node.updatemodel(config)
         return SetWlanConfigResponse(result=True)
@@ -1109,7 +1010,7 @@ class CoreGrpcServer(core_pb2_grpc.CoreApiServicer):
         session = self.get_session(request.session_id, context)
         model_config = request.emane_model_config
         _id = utils.iface_config_id(model_config.node_id, model_config.iface_id)
-        session.emane.set_config(_id, model_config.model, model_config.config)
+        session.emane.set_config(_id, model_config.model, dict(model_config.config))
         return SetEmaneModelConfigResponse(result=True)
 
     def SaveXml(
@@ -1124,10 +1025,8 @@ class CoreGrpcServer(core_pb2_grpc.CoreApiServicer):
         """
         logger.debug("save xml: %s", request)
         session = self.get_session(request.session_id, context)
-        _, temp_path = tempfile.mkstemp()
-        session.save_xml(temp_path)
-        with open(temp_path, "r") as xml_file:
-            data = xml_file.read()
+        xml_writer = CoreXmlWriter(session)
+        data = xml_writer.get_data()
         return core_pb2.SaveXmlResponse(data=data)
 
     def OpenXml(
@@ -1143,7 +1042,7 @@ class CoreGrpcServer(core_pb2_grpc.CoreApiServicer):
         logger.debug("open xml: %s", request)
         session = self.coreemu.create_session()
         temp = tempfile.NamedTemporaryFile(delete=False)
-        temp.write(request.data.encode("utf-8"))
+        temp.write(request.data.encode())
         temp.close()
         temp_path = Path(temp.name)
         file_path = Path(request.file)
@@ -1163,7 +1062,8 @@ class CoreGrpcServer(core_pb2_grpc.CoreApiServicer):
         self, request: core_pb2.GetInterfacesRequest, context: ServicerContext
     ) -> core_pb2.GetInterfacesResponse:
         """
-        Retrieve all the interfaces of the system including bridges, virtual ethernet, and loopback
+        Retrieve all the interfaces of the system including bridges, virtual ethernet,
+        and loopback.
 
         :param request: get-interfaces request
         :param context: context object
@@ -1188,70 +1088,70 @@ class CoreGrpcServer(core_pb2_grpc.CoreApiServicer):
         """
         logger.debug("emane link: %s", request)
         session = self.get_session(request.session_id, context)
-        nem1 = request.nem1
-        iface1 = session.emane.get_iface(nem1)
-        if not iface1:
-            context.abort(grpc.StatusCode.NOT_FOUND, f"nem one {nem1} not found")
-        node1 = iface1.node
-
-        nem2 = request.nem2
-        iface2 = session.emane.get_iface(nem2)
-        if not iface2:
-            context.abort(grpc.StatusCode.NOT_FOUND, f"nem two {nem2} not found")
-        node2 = iface2.node
-
-        if iface1.net == iface2.net:
-            if request.linked:
-                flag = MessageFlags.ADD
-            else:
-                flag = MessageFlags.DELETE
-            color = session.get_link_color(iface1.net.id)
-            link = LinkData(
-                message_type=flag,
-                type=LinkTypes.WIRELESS,
-                node1_id=node1.id,
-                node2_id=node2.id,
-                network_id=iface1.net.id,
-                color=color,
-            )
+        flag = MessageFlags.ADD if request.linked else MessageFlags.DELETE
+        link = session.emane.get_nem_link(request.nem1, request.nem2, flag)
+        if link:
             session.broadcast_link(link)
             return EmaneLinkResponse(result=True)
         else:
             return EmaneLinkResponse(result=False)
 
-    def GetNodeConfigService(
-        self, request: GetNodeConfigServiceRequest, context: ServicerContext
-    ) -> GetNodeConfigServiceResponse:
+    def GetNodeService(
+        self, request: GetNodeServiceRequest, context: ServicerContext
+    ) -> GetNodeServiceResponse:
         """
-        Gets configuration, for a given configuration service, for a given node.
+        Gets configuration, for a given service, for a given node.
 
-        :param request: get node config service request
+        :param request: get node service request
         :param context: grpc context
-        :return: get node config service response
+        :return: get node service response
         """
         session = self.get_session(request.session_id, context)
         node = self.get_node(session, request.node_id, context, CoreNode)
         self.validate_service(request.name, context)
-        service = node.config_services.get(request.name)
+        service = node.services.get(request.name)
         if service:
             config = service.render_config()
         else:
             service = self.coreemu.service_manager.get_service(request.name)
             config = {x.id: x.default for x in service.default_configs}
-        return GetNodeConfigServiceResponse(config=config)
+        return GetNodeServiceResponse(config=config)
 
-    def GetConfigServiceDefaults(
-        self, request: GetConfigServiceDefaultsRequest, context: ServicerContext
-    ) -> GetConfigServiceDefaultsResponse:
+    def GetServiceRendered(
+        self, request: GetServiceRenderedRequest, context: ServicerContext
+    ) -> GetServiceRenderedResponse:
         """
-        Get default values for a given configuration service.
+        Retrieves the rendered file data for a given service on a node.
 
-        :param request: get config service defaults request
+        :param request: service render request
         :param context: grpc context
-        :return: get config service defaults response
+        :return: rendered service files
         """
+        session = self.get_session(request.session_id, context)
+        node = self.get_node(session, request.node_id, context, CoreNode)
+        self.validate_service(request.name, context)
+        service = node.services.get(request.name)
+        if not service:
+            context.abort(
+                grpc.StatusCode.NOT_FOUND, f"unknown node service {request.name}"
+            )
+        rendered = service.get_rendered_templates()
+        return GetServiceRenderedResponse(rendered=rendered)
+
+    def GetServiceDefaults(
+        self, request: GetServiceDefaultsRequest, context: ServicerContext
+    ) -> GetServiceDefaultsResponse:
+        """
+        Get default values for a given service.
+
+        :param request: get service defaults request
+        :param context: grpc context
+        :return: get service defaults response
+        """
+        session = self.get_session(request.session_id, context)
+        node = self.get_node(session, request.node_id, context, CoreNode)
         service_class = self.validate_service(request.name, context)
-        service = service_class(None)
+        service = service_class(node)
         templates = service.get_templates()
         config = {}
         for configuration in service.default_configs:
@@ -1266,9 +1166,9 @@ class CoreGrpcServer(core_pb2_grpc.CoreApiServicer):
             config[configuration.id] = config_option
         modes = []
         for name, mode_config in service.modes.items():
-            mode = configservices_pb2.ConfigMode(name=name, config=mode_config)
+            mode = services_pb2.ConfigMode(name=name, config=mode_config)
             modes.append(mode)
-        return GetConfigServiceDefaultsResponse(
+        return GetServiceDefaultsResponse(
             templates=templates, config=config, modes=modes
         )
 
@@ -1276,7 +1176,7 @@ class CoreGrpcServer(core_pb2_grpc.CoreApiServicer):
         self, request: GetEmaneEventChannelRequest, context: ServicerContext
     ) -> GetEmaneEventChannelResponse:
         session = self.get_session(request.session_id, context)
-        service = session.emane.nem_service.get(request.nem_id)
+        service = session.emane.event_manager.get_service(request.nem_id)
         if not service:
             context.abort(grpc.StatusCode.NOT_FOUND, f"unknown nem id {request.nem_id}")
         return GetEmaneEventChannelResponse(
@@ -1299,18 +1199,21 @@ class CoreGrpcServer(core_pb2_grpc.CoreApiServicer):
     ) -> WlanLinkResponse:
         session = self.get_session(request.session_id, context)
         wlan = self.get_node(session, request.wlan, context, WlanNode)
-        if not isinstance(wlan.model, BasicRangeModel):
+        if not isinstance(wlan.wireless_model, BasicRangeModel):
             context.abort(
                 grpc.StatusCode.NOT_FOUND,
-                f"wlan node {request.wlan} does not using BasicRangeModel",
+                f"wlan node {request.wlan} is not using BasicRangeModel",
             )
         node1 = self.get_node(session, request.node1_id, context, CoreNode)
         node2 = self.get_node(session, request.node2_id, context, CoreNode)
         node1_iface, node2_iface = None, None
-        for net, iface1, iface2 in node1.commonnets(node2):
-            if net == wlan:
-                node1_iface = iface1
-                node2_iface = iface2
+        for iface in node1.get_ifaces(control=False):
+            if iface.net == wlan:
+                node1_iface = iface
+                break
+        for iface in node2.get_ifaces(control=False):
+            if iface.net == wlan:
+                node2_iface = iface
                 break
         result = False
         if node1_iface and node2_iface:
@@ -1318,7 +1221,9 @@ class CoreGrpcServer(core_pb2_grpc.CoreApiServicer):
                 wlan.link(node1_iface, node2_iface)
             else:
                 wlan.unlink(node1_iface, node2_iface)
-            wlan.model.sendlinkmsg(node1_iface, node2_iface, unlink=not request.linked)
+            wlan.wireless_model.sendlinkmsg(
+                node1_iface, node2_iface, unlink=not request.linked
+            )
             result = True
         return WlanLinkResponse(result=result)
 
@@ -1333,5 +1238,202 @@ class CoreGrpcServer(core_pb2_grpc.CoreApiServicer):
             nem1 = grpcutils.get_nem_id(session, node1, request.iface1_id, context)
             node2 = self.get_node(session, request.node2_id, context, CoreNode)
             nem2 = grpcutils.get_nem_id(session, node2, request.iface2_id, context)
-            session.emane.publish_pathloss(nem1, nem2, request.rx1, request.rx2)
+            session.emane.event_manager.publish_pathloss(
+                nem1, nem2, forward1=request.rx1, forward2=request.rx2
+            )
         return EmanePathlossesResponse()
+
+    def Linked(
+        self, request: LinkedRequest, context: ServicerContext
+    ) -> LinkedResponse:
+        session = self.get_session(request.session_id, context)
+        session.linked(
+            request.node1_id,
+            request.node2_id,
+            request.iface1_id,
+            request.iface2_id,
+            request.linked,
+        )
+        return LinkedResponse()
+
+    def WirelessLinked(
+        self, request: WirelessLinkedRequest, context: ServicerContext
+    ) -> WirelessLinkedResponse:
+        session = self.get_session(request.session_id, context)
+        wireless = self.get_node(session, request.wireless_id, context, WirelessNode)
+        wireless.link_control(request.node1_id, request.node2_id, request.linked)
+        return WirelessLinkedResponse()
+
+    def WirelessConfig(
+        self, request: WirelessConfigRequest, context: ServicerContext
+    ) -> WirelessConfigResponse:
+        session = self.get_session(request.session_id, context)
+        wireless = self.get_node(session, request.wireless_id, context, WirelessNode)
+        options1 = request.options1
+        options2 = options1
+        if request.HasField("options2"):
+            options2 = request.options2
+        options1 = grpcutils.convert_options_proto(options1)
+        options2 = grpcutils.convert_options_proto(options2)
+        wireless.link_config(request.node1_id, request.node2_id, options1, options2)
+        return WirelessConfigResponse()
+
+    def GetWirelessConfig(
+        self, request: GetWirelessConfigRequest, context: ServicerContext
+    ) -> GetWirelessConfigResponse:
+        session = self.get_session(request.session_id, context)
+        try:
+            wireless = session.get_node(request.node_id, WirelessNode)
+            configs = wireless.get_config()
+        except CoreError:
+            configs = {x.id: x for x in WirelessNode.options}
+        config_options = {}
+        for config in configs.values():
+            config_option = common_pb2.ConfigOption(
+                label=config.label,
+                name=config.id,
+                value=config.default,
+                type=config.type.value,
+                select=config.options,
+                group=config.group,
+            )
+            config_options[config.id] = config_option
+        return GetWirelessConfigResponse(config=config_options)
+
+    def EmaneEvents(
+        self, request_iterator: Iterable[EmaneEventsRequest], context: ServicerContext
+    ) -> EmaneEventsResponse:
+        for request in request_iterator:
+            session = self.get_session(request.session_id, context)
+            if request.HasField("location"):
+                location = request.location
+                if location.HasField("nem_id"):
+                    nem_id = location.nem_id
+                else:
+                    node = self.get_node(session, location.node_id, context, CoreNode)
+                    nem_id = grpcutils.get_nem_id(
+                        session, node, location.iface_id, context
+                    )
+                session.emane.event_manager.publish_location(
+                    nem_id,
+                    location.lon,
+                    location.lat,
+                    location.alt,
+                    grpcutils.get_optional(location, "azimuth"),
+                    grpcutils.get_optional(location, "elevation"),
+                    grpcutils.get_optional(location, "magnitude"),
+                    grpcutils.get_optional(location, "roll"),
+                    grpcutils.get_optional(location, "pitch"),
+                    grpcutils.get_optional(location, "yaw"),
+                )
+            elif request.HasField("comm_effect"):
+                comm_effect = request.comm_effect
+                if comm_effect.HasField("nem1_id"):
+                    nem1_id = comm_effect.nem1_id
+                else:
+                    node1 = self.get_node(
+                        session, comm_effect.node1_id, context, CoreNode
+                    )
+                    nem1_id = grpcutils.get_nem_id(
+                        session, node1, comm_effect.iface1_id, context
+                    )
+                if comm_effect.HasField("nem2_id"):
+                    nem2_id = comm_effect.nem2_id
+                else:
+                    node2 = self.get_node(
+                        session, comm_effect.node2_id, context, CoreNode
+                    )
+                    nem2_id = grpcutils.get_nem_id(
+                        session, node2, comm_effect.iface2_id, context
+                    )
+                session.emane.event_manager.publish_comm_effect(
+                    nem1_id,
+                    nem2_id,
+                    comm_effect.delay,
+                    comm_effect.jitter,
+                    comm_effect.loss,
+                    comm_effect.dup,
+                    comm_effect.unicast,
+                    comm_effect.broadcast,
+                )
+            elif request.HasField("pathloss"):
+                pathloss = request.pathloss
+                if pathloss.HasField("nem1_id"):
+                    nem1_id = pathloss.nem1_id
+                else:
+                    node1 = self.get_node(session, pathloss.node1_id, context, CoreNode)
+                    nem1_id = grpcutils.get_nem_id(
+                        session, node1, pathloss.iface1_id, context
+                    )
+                if pathloss.HasField("nem2_id"):
+                    nem2_id = pathloss.nem2_id
+                else:
+                    node2 = self.get_node(session, pathloss.node2_id, context, CoreNode)
+                    nem2_id = grpcutils.get_nem_id(
+                        session, node2, pathloss.iface2_id, context
+                    )
+                session.emane.event_manager.publish_pathloss(
+                    nem1_id,
+                    nem2_id,
+                    grpcutils.get_optional(pathloss, "forward1"),
+                    grpcutils.get_optional(pathloss, "reverse1"),
+                    grpcutils.get_optional(pathloss, "forward2"),
+                    grpcutils.get_optional(pathloss, "reverse2"),
+                )
+            elif request.HasField("antenna"):
+                antenna = request.antenna
+                if antenna.HasField("nem_id"):
+                    nem_id = antenna.nem_id
+                else:
+                    node = self.get_node(session, antenna.node_id, context, CoreNode)
+                    nem_id = grpcutils.get_nem_id(
+                        session, node, antenna.iface_id, context
+                    )
+                session.emane.event_manager.publish_antenna_profile(
+                    nem_id, antenna.profile, antenna.azimuth, antenna.elevation
+                )
+            elif request.HasField("fading"):
+                fading = request.fading
+                if fading.HasField("nem_id"):
+                    nem_id = fading.nem_id
+                else:
+                    node = self.get_node(session, fading.node_id, context, CoreNode)
+                    nem_id = grpcutils.get_nem_id(
+                        session, node, fading.iface_id, context
+                    )
+                session.emane.event_manager.publish_fading_selection(
+                    nem_id, fading.model
+                )
+        return EmaneEventsResponse()
+
+    def CreateService(
+        self, request: CreateServiceRequest, context: ServicerContext
+    ) -> CreateServiceResponse:
+        service = request.service
+        class_name = f"{service.name.capitalize()}Class"
+        custom_class = type(
+            class_name, (CustomCoreService,), dict(__init__=CustomCoreService.__init__)
+        )
+        custom_class.name = service.name
+        custom_class.group = service.group
+        custom_class.executables = list(service.executables)
+        custom_class.dependencies = list(service.dependencies)
+        custom_class.directories = list(service.directories)
+        custom_class.files = list(service.files)
+        custom_class.startup = list(service.startup)
+        custom_class.validate = list(service.validate)
+        custom_class.shutdown = list(service.shutdown)
+        custom_class.validation_mode = ServiceMode(service.validation_mode)
+        custom_class.validation_timer = service.validation_timer
+        custom_class.validation_period = service.validation_period
+        custom_class.defined_templates = dict(request.templates)
+        result = False
+        if request.recreate:
+            self.coreemu.service_manager.services.pop(custom_class.name, None)
+        try:
+            if issubclass(custom_class, CustomCoreService):
+                self.coreemu.service_manager.add(custom_class)
+                result = True
+        except CoreError as e:
+            logger.error("error creating custom service: %s", e)
+        return CreateServiceResponse(result=result)
